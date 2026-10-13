@@ -34,11 +34,38 @@ a driver or the LLM client.
 ## How to run it
 
 ```bash
-python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\\Scripts\\activate
 pip install -e ".[dev]"
 ruff check .
-python -m pytest
+python -m pytest                                   # domain, use cases, tools, LLM adapter, HTTP, contract, architecture
+cp .env.example .env                               # JWT_PUBLIC_KEY (or _FILE), ADVISOR_DATABASE_URL, OPENAI_API_KEY, SERVICE_TOKEN
+python -m apps.api                                 # http://localhost:8000/api/v1/advisor/health
+python -m apps.consumer                            # the event consumer (ADVISOR_DATABASE_URL, RABBITMQ_URL)
 ```
+
+Without `ADVISOR_DATABASE_URL` the service starts over an empty in-memory store (development
+only; it says so in the log). Without `OPENAI_API_KEY` every reply is the fixed degraded message
+with `degraded: true` and `201` (D-02); health says `llm: missing`. Without `SERVICE_TOKEN` a
+confirmation answers `503`: the saga is started only with the advisor's own token (D-08).
+
+Integration tests against the real schema and seeds run only when `TEST_DATABASE_URL` is set.
+**They empty the conversation tables**: point them at a throwaway database, never at the
+platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and runs them:
+
+```bash
+TEST_DATABASE_URL=postgresql://advisor:password@localhost:5438/advisor python -m pytest tests/test_postgres_integration.py tests/test_projections_integration.py
+```
+
+Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
+qone-advisor-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
+and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: the API with
+`expose` only after `advisor-db` is healthy, and the consumer as a second process of the image.
+
+Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
+5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s, 120 s per reply across
+every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga. Every log line is JSON
+with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
+`contracts/openapi/`.
 
 ## Branching
 
