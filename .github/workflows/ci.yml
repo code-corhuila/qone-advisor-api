@@ -1,0 +1,75 @@
+name: CI
+on:
+  pull_request:
+    branches: [develop, qa, main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Domain, use-case, tools, LLM adapter, HTTP, contract and architecture tests (no network, no key)
+        run: python -m pytest
+
+  integration:
+    # The real engine with the schema of qone-advisor-db (Annex C). The schema is cloned from the
+    # sibling repository; while its develop has no migrations yet, the job reports it and skips.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-and-test
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_DB: advisor
+          POSTGRES_USER: advisor
+          POSTGRES_PASSWORD: advisor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U advisor -d advisor" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Fetch the schema of qone-advisor-db
+        run: git clone --depth 1 --branch ${ADVISOR_DB_REF:-develop} https://github.com/code-corhuila/qone-advisor-db.git /tmp/advisor-db
+      - name: Migrate and run the integration tests
+        run: |
+          if [ ! -d /tmp/advisor-db/migrations ]; then
+            echo "::notice::qone-advisor-db has no migrations on ${ADVISOR_DB_REF:-develop} yet; integration tests skipped"
+            exit 0
+          fi
+          docker run --rm --network host -v /tmp/advisor-db:/workspace flyway/flyway:10.22.0 \
+            -workingDirectory=/workspace -configFiles=/workspace/flyway.toml \
+            -url=jdbc:postgresql://localhost:5432/advisor -user=advisor -password=advisor migrate
+          TEST_DATABASE_URL=postgresql://advisor:advisor@localhost:5432/advisor python -m pytest tests/test_postgres_integration.py tests/test_projections_integration.py -v
+
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -f deploy/Dockerfile -t qone-advisor-api:ci .
+      - name: Run it with a throwaway key and the in-memory store, then smoke-check it
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /tmp/jwt-private.pem 2>/dev/null
+          openssl pkey -in /tmp/jwt-private.pem -pubout -out /tmp/jwt-public.pem
+          docker run -d --rm --name advisor-ci -p 8015:8000 -e JWT_PUBLIC_KEY="$(awk 'NF {printf "%s\\n", $0}' /tmp/jwt-public.pem)" qone-advisor-api:ci
+          for i in $(seq 1 30); do curl -fs http://localhost:8015/api/v1/advisor/health && break; sleep 1; done
+          sh deploy/smoke.sh http://localhost:8015
+          docker stop advisor-ci
