@@ -1,0 +1,61 @@
+# The advisor as qone-infra composes it (Annex G): expose only, reachable on the
+# platform network through the gateway; it starts after its database is healthy and after the
+# migrations ran (`run --rm advisor-db-migrate` from qone-infra). Every value comes from .env.
+services:
+  qone-advisor-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: qone-advisor-api:${IMAGE_TAG:-dev}
+    container_name: qone-advisor-api
+    restart: unless-stopped
+    environment:
+      ADVISOR_DATABASE_URL: postgresql://${ADVISOR_DB_USER:-advisor}:${ADVISOR_DB_PASSWORD:?ADVISOR_DB_PASSWORD is required}@advisor-db:5432/${ADVISOR_DB_NAME:-advisor}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?JWT_PUBLIC_KEY is required}
+      CURRENT_TERM: ${CURRENT_TERM:-2026-B}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      WORKFLOW_URL: ${WORKFLOW_URL:-http://qone-workflow:8000}
+      SERVICE_TOKEN: ${ADVISOR_SERVICE_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8000"
+    depends_on:
+      advisor-db:
+        condition: service_healthy
+    networks:
+      - platform
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/advisor/health', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # The event consumer: a second process of the same image (D-11). It keeps the projections of
+  # catalog, enrollment and billing and settles plans from the enrollment outcomes.
+  qone-advisor-consumer:
+    image: qone-advisor-api:${IMAGE_TAG:-dev}
+    container_name: qone-advisor-consumer
+    restart: unless-stopped
+    command: ["python", "-m", "apps.consumer"]
+    environment:
+      ADVISOR_DATABASE_URL: postgresql://${ADVISOR_DB_USER:-advisor}:${ADVISOR_DB_PASSWORD:?ADVISOR_DB_PASSWORD is required}@advisor-db:5432/${ADVISOR_DB_NAME:-advisor}
+      RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+      CURRENT_TERM: ${CURRENT_TERM:-2026-B}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-unused}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      qone-advisor-api:
+        condition: service_started
+    # No HTTP here: the image's check would probe the API port; the process itself is the signal.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys; sys.exit(0 if os.path.exists('/proc/1/cmdline') else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - platform
+
+networks:
+  platform:
+    external: true
