@@ -16,6 +16,6 @@ Only towards `qa` or `main`: the re-applied commits, each with its `(cherry pick
 ## Checklist
 
 - [ ] No secrets, no `.env`, no `*.pem`
-- [ ] No schema change here: the structure lives in `qone-enrollment-db`
-- [ ] Contract `07-api/contracts/openapi/qone-enrollment-api.yaml` respected
+- [ ] No schema change here: the structure lives in `qone-advisor-db`
+- [ ] Contract `07-api/contracts/openapi/qone-advisor-api.yaml` respected
 - [ ] `domain/` and `application/` import no framework or driver
