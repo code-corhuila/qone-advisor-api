@@ -8,7 +8,10 @@ useDefault = true
 [[rules]]
 id = "openai-api-key"
 description = "OpenAI API key (sk-, sk-proj-, sk-svcacct-, sk-admin-)"
-regex = '''sk-(proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}'''
+# The whole key is the secret (group 1): the prefix alone would fall below the entropy floor.
+regex = '''\b(sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
+entropy = 3
 keywords = ["sk-"]
 
 [allowlist]
