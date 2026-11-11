@@ -55,7 +55,7 @@ whole history for secrets (`.gitleaks.toml` allowlists `tests/`, whose keys and 
 fixtures).
 
 Ready probe (HU-PLT-004, ADR-011): `GET /api/v1/advisor/health/ready`, public like `/health`, runs
-`SELECT 1` on the pool waiting at most 1 s for a connection and answers `200
+`SELECT 1` on the pool within a 1 s deadline (connection and query, a hung query included) and answers `200
 {"status":"ready","service":"qone-advisor-api","checks":{"database":"ok"}}` or `503` with the
 common envelope (`SERVICE_UNAVAILABLE`, `database is not reachable`). In memory it answers ready
 with no checks. `/health` stays the liveness.
