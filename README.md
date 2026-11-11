@@ -91,6 +91,12 @@ oldest message of the hour leaves the window), and the model is not called. Ever
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
 
+Data that leaves Qampus (`code-corhuila/qone-docs#55`): before the conversation goes to the
+provider, emails, Colombian document numbers (6 to 10 digits, or dotted) and phone numbers (`+57`
+and 10 digits, or a 10-digit mobile starting with 3) become `[redacted]`
+(`application/usecase/redaction.py`); codes like `ISW-602`, years, times and `$` amounts are
+kept, and `advisor.message` stores what the student wrote.
+
 Prompt injection (`code-corhuila/qone-docs#54`): the `reason` the model writes for a plan is at
 most 200 characters of plain text, with no URL and no markup (`reason_problem` in
 `domain/model/plan.py`); otherwise `propose_enrollment` answers an error and no plan is stored.
