@@ -15,10 +15,17 @@ A person sends at most `messages_per_hour` messages in a sliding hour across the
 called and before anything is written, so the provider's budget is spent fairly. A repeated
 Idempotency-Key is still answered with the first reply: it costs nothing.
 
+An Idempotency-Key belongs to the person who sent it (#55): the same key from someone else is
+another request and never answers their conversation, reply or plan. It is kept with the SHA-256
+of the canonical request (the operation, and for a message its conversation and content); the
+same person reusing a key for a different request gets IdempotencyKeyReused and nothing is written.
+
 The history sent to the agent (the new question included) is redacted first: emails, document
 and phone numbers become `[redacted]` (#55, threat I on TB6); the stored messages keep what the
 student wrote."""
 
+import hashlib
+import json
 from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
@@ -43,6 +50,7 @@ from advisor.application.port.outbound.ports import (
     Clock,
     IdGenerator,
     Projections,
+    RequestKey,
     SagaStarter,
     SagaUnavailable,
 )
@@ -100,12 +108,13 @@ class AdvisorService(AdvisorUseCases):
     def start_conversation(self, caller: Caller, idempotency_key: str) -> Created[Conversation]:
         user_id = _person(caller)
         _check_key(idempotency_key)
-        existing = self._store.conversation_by_key(idempotency_key)
+        key = _request_key(user_id, idempotency_key, "start_conversation")
+        existing = self._store.conversation_by_key(key)
         if existing is not None:
             return Created(existing, False)
         model = (self._agent.model if self._agent else None) or "none"
         conversation = Conversation.start(self._ids.new_id(), user_id, caller.role.value, model, self._clock.now())
-        stored, created = self._store.create_conversation(conversation, idempotency_key)
+        stored, created = self._store.create_conversation(conversation, key)
         return Created(stored, created)
 
     def my_conversations(self, caller: Caller, page: int, limit: int) -> Page[Conversation]:
@@ -125,7 +134,10 @@ class AdvisorService(AdvisorUseCases):
     ) -> Created[ChatReply]:
         conversation = self._own_conversation(caller, conversation_id)
         _check_key(idempotency_key)
-        prior = self._store.reply_by_key(idempotency_key)
+        key = _request_key(
+            conversation.user_id, idempotency_key, "send_message", conversationId=str(conversation.id), content=content
+        )
+        prior = self._store.reply_by_key(key)
         if prior is not None:
             return Created(ChatReply(prior[0], prior[1], prior[0].content == DEGRADED_REPLY), False)
         asked_at = self._clock.now()
@@ -163,7 +175,7 @@ class AdvisorService(AdvisorUseCases):
                 self._ids.new_id(), conversation.id, conversation.user_id, section.section_id, summary, answered_at
             )
         events = [e for e in [plan_event(plan)] if e] if plan else []
-        (message, stored_plan), created = self._store.record_reply(question, answer, plan, idempotency_key, events)
+        (message, stored_plan), created = self._store.record_reply(question, answer, plan, key, events)
         reply = ChatReply(message, stored_plan, degraded or message.content == DEGRADED_REPLY)
         if created:
             self._metrics.reply_recorded(reply.degraded)
@@ -240,6 +252,13 @@ def _person(caller: Caller) -> UUID:
     if caller.role not in PEOPLE or caller.user_id is None:
         raise Forbidden("only a person talks to the advisor")
     return caller.user_id
+
+
+def _request_key(owner_id: UUID, idempotency_key: str, operation: str, **request: object) -> RequestKey:
+    canonical = json.dumps(
+        {"operation": operation, **request}, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
+    return RequestKey(owner_id, idempotency_key, hashlib.sha256(canonical.encode("utf-8")).hexdigest())
 
 
 def _check_key(idempotency_key: str) -> None:

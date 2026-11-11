@@ -1,12 +1,15 @@
 """The advisor's store and projections in memory: the same rules as PostgreSQL (the key is claimed
 before anything is written, a plan is saved only from the state it was read in, messages are
-never edited) for the tests and for running the API without a database."""
+never edited, a key belongs to its owner and to one request) for the tests and for running the API
+without a database."""
 
 from dataclasses import replace
 from datetime import datetime
 from threading import Lock
 from uuid import UUID
 
+from advisor.application.errors import IdempotencyKeyReused
+from advisor.application.port.outbound.ports import RequestKey
 from advisor.domain.model.advising import SectionView, StudentView, SubjectView
 from advisor.domain.model.conversation import Conversation, Message, MessageRole
 from advisor.domain.model.events import DomainEvent
@@ -19,22 +22,31 @@ class InMemoryAdvisor:
         self.conversations: dict[UUID, Conversation] = {}
         self.messages: list[Message] = []
         self.plans: dict[UUID, Plan] = {}
-        self.keys: dict[str, tuple[str, UUID]] = {}
+        self.keys: dict[tuple[UUID, str], tuple[str, UUID, str]] = {}  # (owner, key) -> (type, id, hash)
         self.outbox: list[DomainEvent] = []
         self.subjects: dict[str, SubjectView] = {}
         self.section_views: dict[UUID, SectionView] = {}
         self.students: dict[UUID, StudentView] = {}
 
     # --- AdvisorStore
-    def conversation_by_key(self, idempotency_key: str) -> Conversation | None:
-        claimed = self.keys.get(idempotency_key)
-        return self.conversations.get(claimed[1]) if claimed and claimed[0] == "conversation" else None
+    def _resource_of(self, key: RequestKey, resource_type: str) -> UUID | None:
+        claimed = self.keys.get((key.owner_id, key.value))
+        if claimed is None:
+            return None
+        if claimed[0] != resource_type or claimed[2] != key.request_hash:
+            raise IdempotencyKeyReused()
+        return claimed[1]
 
-    def create_conversation(self, conversation: Conversation, idempotency_key: str) -> tuple[Conversation, bool]:
+    def conversation_by_key(self, key: RequestKey) -> Conversation | None:
+        found = self._resource_of(key, "conversation")
+        return self.conversations.get(found) if found else None
+
+    def create_conversation(self, conversation: Conversation, key: RequestKey) -> tuple[Conversation, bool]:
         with self._lock:
-            if idempotency_key in self.keys:
-                return self.conversations[self.keys[idempotency_key][1]], False
-            self.keys[idempotency_key] = ("conversation", conversation.id)
+            earlier = self.conversation_by_key(key)
+            if earlier is not None:
+                return earlier, False
+            self.keys[(key.owner_id, key.value)] = ("conversation", conversation.id, key.request_hash)
             self.conversations[conversation.id] = conversation
             return conversation, True
 
@@ -56,11 +68,11 @@ class InMemoryAdvisor:
         mine = sorted((m for m in self.messages if m.conversation_id == conversation_id), key=lambda m: m.created_at)
         return mine[-last:]
 
-    def reply_by_key(self, idempotency_key: str) -> tuple[Message, Plan | None] | None:
-        claimed = self.keys.get(idempotency_key)
-        if not claimed or claimed[0] != "reply":
+    def reply_by_key(self, key: RequestKey) -> tuple[Message, Plan | None] | None:
+        found = self._resource_of(key, "reply")
+        if found is None:
             return None
-        answer = next(m for m in self.messages if m.id == claimed[1])
+        answer = next(m for m in self.messages if m.id == found)
         plan = next(
             (
                 p
@@ -81,14 +93,13 @@ class InMemoryAdvisor:
         return len(sent), min(sent, default=None)
 
     def record_reply(
-        self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
+        self, question: Message, answer: Message, plan: Plan | None, key: RequestKey, events: list[DomainEvent]
     ) -> tuple[tuple[Message, Plan | None], bool]:
         with self._lock:
-            if idempotency_key in self.keys:
-                prior = self.reply_by_key(idempotency_key)
-                assert prior is not None
+            prior = self.reply_by_key(key)
+            if prior is not None:
                 return prior, False
-            self.keys[idempotency_key] = ("reply", answer.id)
+            self.keys[(key.owner_id, key.value)] = ("reply", answer.id, key.request_hash)
             self.messages += [question, answer]
             if plan is not None:
                 self.plans[plan.id] = plan

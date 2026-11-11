@@ -72,7 +72,7 @@ def test_a_reply_with_a_plan_is_written_once_and_found_again_by_its_key(ports, p
     conversation = advisor.start_conversation(ME, "it-conversation").item
     assert not advisor.start_conversation(ME, "it-conversation").created
     first = advisor.send_message(ME, conversation.id, "matricúlame ISW-602", "it-message-1")
-    again = advisor.send_message(ME, conversation.id, "otra vez", "it-message-1")
+    again = advisor.send_message(ME, conversation.id, "matricúlame ISW-602", "it-message-1")
     assert first.created and not again.created
     assert again.item.message.id == first.item.message.id and again.item.plan.id == first.item.plan.id
     assert first.item.plan.summary.slots == again.item.plan.summary.slots
@@ -144,3 +144,20 @@ def test_the_message_quota_counts_the_user_rows_of_every_conversation_in_the_hou
         advisor.send_message(ME, second.id, "hola", "it-quota-3")
     assert refused.value.retry_after == 45 * 60 and len(agent.requests) == 2
     assert store.user_messages_since(SANTIAGO, hour_ago) == (0, None)
+
+
+def test_a_key_belongs_to_its_owner_and_to_one_request(ports):
+    from advisor.application.errors import IdempotencyKeyReused
+
+    advisor = service(ports, ScriptedAgent())
+    santiago = Caller(SANTIAGO, Role.STUDENT, "Santiago Rojas", str(SANTIAGO))
+    hers = advisor.start_conversation(ME, "it-shared-key")
+    his = advisor.start_conversation(santiago, "it-shared-key")
+    assert hers.created and his.created and his.item.id != hers.item.id and his.item.user_id == SANTIAGO
+    reply = advisor.send_message(ME, hers.item.id, "hola", "it-message-1")
+    other = advisor.send_message(santiago, his.item.id, "hola", "it-message-1")
+    assert other.created and other.item.message.id != reply.item.message.id
+    with pytest.raises(IdempotencyKeyReused):
+        advisor.send_message(ME, hers.item.id, "otra cosa", "it-message-1")
+    with pytest.raises(IdempotencyKeyReused):
+        advisor.start_conversation(ME, "it-message-1")
