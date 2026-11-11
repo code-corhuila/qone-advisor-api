@@ -2,7 +2,11 @@
 enrollment and billing (D-11), consumed from RabbitMQ. Idempotent: the event id goes to the inbox
 in the same transaction as the changes, and a repeated delivery is skipped. A late event never
 overwrites a newer state; a PAID tuition never goes back to ISSUED; an outcome only moves an
-EXECUTING plan. Events of another term and unknown types are acknowledged and ignored."""
+EXECUTING plan. Events of another term and unknown types are acknowledged and ignored.
+
+A `TuitionPaid` moves the student to PAID, which opens the enrollment gates the agent checks, so
+it is applied only with the provider's evidence: a `providerReference` and the `term` it pays.
+Without them it is acknowledged, not applied, and logged at WARN (qone-docs#55)."""
 
 import logging
 from dataclasses import dataclass
@@ -29,6 +33,7 @@ class ProjectionStore(Protocol):
 
 
 SEAT_EVENTS = {"SeatReserved", "SeatReleased", "SeatCommitted"}
+PAYMENT_EVIDENCE = ("providerReference", "term")
 SECTION_KEYS = (
     "sectionId",
     "subjectCode",
@@ -41,8 +46,17 @@ SECTION_KEYS = (
 )
 
 
+def missing_evidence(event: IncomingEvent) -> list[str]:
+    """The fields a TuitionPaid lacks to be trusted; empty for any other event."""
+    if event.event_type != "TuitionPaid":
+        return []
+    return [k for k in PAYMENT_EVIDENCE if not event.payload.get(k)]
+
+
 def changes_of(event: IncomingEvent, term: str) -> list[Change]:
     p, kind = event.payload, event.event_type
+    if missing_evidence(event):
+        return []
     if kind == "SubjectCreated":
         return [("subject", {k: p[k] for k in ("subjectId", "code", "name", "credits", "semester", "prerequisites")})]
     if kind == "SectionCreated":
@@ -69,6 +83,13 @@ class ProjectEvents:
         self._term = current_term
 
     def handle(self, event: IncomingEvent, correlation_id: str = "") -> str:
+        missing = missing_evidence(event)
+        if missing:
+            log.warning(
+                "event ignored: no payment evidence",
+                extra={"traceId": correlation_id, "event": event.event_type, "detail": f"missing {', '.join(missing)}"},
+            )
+            return "ignored"
         changes = changes_of(event, self._term)
         if not changes:
             return "ignored"
