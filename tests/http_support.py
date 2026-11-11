@@ -44,10 +44,10 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client(agent=None, saga=None):
+def make_client(agent=None, saga=None, **options):
     store, clock, saga = seeded_advisor(), MovableClock(), saga or FakeSaga()
     registry = CollectorRegistry()
     metrics = PrometheusAdvisorMetrics(registry)
-    service = AdvisorService(store, store, agent, saga, clock, SequenceIds(), "2026-B", metrics=metrics)
+    service = AdvisorService(store, store, agent, saga, clock, SequenceIds(), "2026-B", metrics=metrics, **options)
     client = TestClient(create_app(service, TokenVerifier(PUBLIC_PEM), registry), raise_server_exceptions=False)
     return client, store, clock, saga

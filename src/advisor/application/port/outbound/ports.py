@@ -31,6 +31,10 @@ class AdvisorStore(Protocol):
 
     def reply_by_key(self, idempotency_key: str) -> tuple[Message, Plan | None] | None: ...
 
+    def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
+        """The USER messages of every conversation of `user_id` sent after `since`: how many and the
+        instant of the oldest (the message quota, #53)."""
+
     def record_reply(
         self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
     ) -> tuple[tuple[Message, Plan | None], bool]:

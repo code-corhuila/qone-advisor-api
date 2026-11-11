@@ -71,7 +71,11 @@ and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: 
 
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
 5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s, 120 s per reply across
-every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga. Every log line is JSON
+every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga, at most 800 tokens per
+model call (`ADVISOR_MAX_TOKENS`) and 30 messages per person in a sliding hour
+(`ADVISOR_MESSAGES_PER_HOUR`, `code-corhuila/qone-docs#53`). Past the quota AD-05 answers `429
+TOO_MANY_REQUESTS` with the common envelope and `Retry-After: <seconds>` (until the person's
+oldest message of the hour leaves the window), and the model is not called. Every log line is JSON
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
 

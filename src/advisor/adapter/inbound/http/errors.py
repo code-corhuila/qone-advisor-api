@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from advisor.adapter.inbound.http.auth import AuthError
-from advisor.application.errors import Forbidden, NotFound, ServiceUnavailable
+from advisor.application.errors import Forbidden, NotFound, ServiceUnavailable, TooManyRequests
 from advisor.domain.model.errors import BusinessRuleViolation, FieldError, InvalidStatusTransition, ValidationError
 
 log = logging.getLogger("advisor.http")
@@ -57,6 +57,12 @@ def install(app: FastAPI) -> None:
     @app.exception_handler(InvalidStatusTransition)
     async def _transition(request: Request, error: InvalidStatusTransition):
         return envelope(request, 422, "INVALID_STATUS_TRANSITION", error.message)
+
+    @app.exception_handler(TooManyRequests)
+    async def _too_many(request: Request, error: TooManyRequests):
+        response = envelope(request, 429, "TOO_MANY_REQUESTS", error.message)
+        response.headers["Retry-After"] = str(error.retry_after)
+        return response
 
     @app.exception_handler(ServiceUnavailable)
     async def _unavailable(request: Request, error: ServiceUnavailable):
