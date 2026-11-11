@@ -17,11 +17,13 @@ from advisor.adapter.outbound.runtime import SystemClock, Uuid4Generator
 from advisor.adapter.outbound.saga.http import HttpSagaStarter
 from advisor.application.port.outbound.ports import SagaUnavailable
 from advisor.application.usecase.advisor import AdvisorService
+from advisor.application.usecase.readiness import CheckReadiness
 
 # Explicit limits (norm 5.3.10, Annex C), declared here with their values.
 DB_POOL_MAX = 10
 DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
+READY_TIMEOUT_SECONDS = 1.0  # the ready probe waits at most this for a connection (HU-PLT-004)
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
 LLM_BUDGET_SECONDS = 120.0  # one reply, every round included (ADR-003)
@@ -79,12 +81,18 @@ def build_app(settings: Settings | None = None):
     settings = settings or Settings()
     configure_logging(settings.log_level)
     log = logging.getLogger("advisor")
-    pool = None
+    pool, readiness = None, CheckReadiness([])
     if settings.database_url and settings.database_url != "memory":
-        from advisor.adapter.outbound.persistence.postgres import PostgresAdvisorStore, PostgresProjections, connect
+        from advisor.adapter.outbound.persistence.postgres import (
+            PostgresAdvisorStore,
+            PostgresProjections,
+            PostgresReachable,
+            connect,
+        )
 
         pool = connect(settings.database_url, DB_POOL_MAX, DB_WAIT_SECONDS, DB_STATEMENT_TIMEOUT_MS)
         store, projections = PostgresAdvisorStore(pool), PostgresProjections(pool)
+        readiness = CheckReadiness([PostgresReachable(pool, READY_TIMEOUT_SECONDS)])
         log.info("store: postgresql (pool max %s, statement timeout %s ms)", DB_POOL_MAX, DB_STATEMENT_TIMEOUT_MS)
     else:
         store = projections = InMemoryAdvisor()
@@ -133,7 +141,7 @@ def build_app(settings: Settings | None = None):
         metrics=metrics,
     )
     log.info("quota: %s messages per person per hour", settings.messages_per_hour)
-    return create_app(service, TokenVerifier(settings.public_key), registry=registry)
+    return create_app(service, TokenVerifier(settings.public_key), registry=registry, readiness=readiness)
 
 
 class JsonFormatter(logging.Formatter):

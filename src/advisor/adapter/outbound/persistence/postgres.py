@@ -7,6 +7,7 @@ Messages are only inserted (INV-ADV-004)."""
 from datetime import UTC, datetime, time
 from uuid import UUID
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -34,6 +35,25 @@ def connect(
         kwargs={"options": f"-c statement_timeout={statement_timeout_ms}", "row_factory": dict_row},
         open=True,
     )
+
+
+class PostgresReachable:
+    """The ready probe's check of the database (HU-PLT-004): `SELECT 1` on a pooled connection,
+    waiting at most `timeout_seconds` for one."""
+
+    name = "database"
+
+    def __init__(self, pool: ConnectionPool, timeout_seconds: float = 1.0) -> None:
+        self._pool = pool
+        self._timeout = timeout_seconds
+
+    def reachable(self) -> bool:
+        try:
+            with self._pool.connection(timeout=self._timeout) as conn:
+                conn.execute("SELECT 1")
+            return True
+        except psycopg.Error:
+            return False
 
 
 class _KeyAlreadyUsed(Exception):

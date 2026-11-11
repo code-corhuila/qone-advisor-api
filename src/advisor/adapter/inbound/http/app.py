@@ -12,6 +12,8 @@ from advisor.adapter.inbound.http import errors, metrics
 from advisor.adapter.inbound.http.auth import TokenVerifier
 from advisor.adapter.inbound.http.router import router
 from advisor.application.port.inbound.advisor import AdvisorUseCases
+from advisor.application.port.inbound.health import ReadinessUseCase
+from advisor.application.usecase.readiness import CheckReadiness
 
 SERVICE = "qone-advisor-api"
 VERSION = "2.0.0"
@@ -20,11 +22,16 @@ access = logging.getLogger("advisor.access")
 
 
 def create_app(
-    use_cases: AdvisorUseCases, verifier: TokenVerifier, registry: CollectorRegistry | None = None
+    use_cases: AdvisorUseCases,
+    verifier: TokenVerifier,
+    registry: CollectorRegistry | None = None,
+    readiness: ReadinessUseCase | None = None,
 ) -> FastAPI:
-    """`registry` is the one the advisor's metrics write to; each app gets its own so tests are isolated."""
+    """`registry` is the one the advisor's metrics write to; each app gets its own so tests are isolated.
+    `readiness` answers `/health/ready`; without it (in memory) there is nothing to wait for."""
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
+    app.state.readiness = readiness or CheckReadiness([])
     app.state.verifier = verifier
     app.state.service = SERVICE
     app.state.version = VERSION
