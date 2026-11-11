@@ -125,3 +125,22 @@ def test_the_llm_cache_serves_what_it_stored(pool):
     with pool.connection() as conn:
         conn.execute("UPDATE advisor.llm_cache SET created_at = %s", (datetime.now(UTC) - timedelta(days=8),))
     assert cache.lookup("prompt", "gpt-4o-mini") is None
+
+
+def test_the_message_quota_counts_the_user_rows_of_every_conversation_in_the_hour(ports):
+    from advisor.application.errors import TooManyRequests
+
+    store, projections = ports
+    clock, agent = MovableClock(), ScriptedAgent()
+    advisor = AdvisorService(store, projections, agent, FakeSaga(), clock, RandomIds(), "2026-B", messages_per_hour=2)
+    first = advisor.start_conversation(ME, "it-quota-a").item
+    second = advisor.start_conversation(ME, "it-quota-b").item
+    advisor.send_message(ME, first.id, "hola", "it-quota-1")
+    clock.advance(15)
+    advisor.send_message(ME, second.id, "hola", "it-quota-2")
+    hour_ago = clock.now() - timedelta(hours=1)
+    assert store.user_messages_since(LAURA, hour_ago) == (2, clock.now() - timedelta(minutes=15))
+    with pytest.raises(TooManyRequests) as refused:
+        advisor.send_message(ME, second.id, "hola", "it-quota-3")
+    assert refused.value.retry_after == 45 * 60 and len(agent.requests) == 2
+    assert store.user_messages_since(SANTIAGO, hour_ago) == (0, None)

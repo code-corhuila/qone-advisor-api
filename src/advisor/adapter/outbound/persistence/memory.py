@@ -3,11 +3,12 @@ before anything is written, a plan is saved only from the state it was read in, 
 never edited) for the tests and for running the API without a database."""
 
 from dataclasses import replace
+from datetime import datetime
 from threading import Lock
 from uuid import UUID
 
 from advisor.domain.model.advising import SectionView, StudentView, SubjectView
-from advisor.domain.model.conversation import Conversation, Message
+from advisor.domain.model.conversation import Conversation, Message, MessageRole
 from advisor.domain.model.events import DomainEvent
 from advisor.domain.model.plan import Plan, PlanStatus
 
@@ -69,6 +70,15 @@ class InMemoryAdvisor:
             None,
         )
         return answer, plan
+
+    def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
+        mine = {c.id for c in self.conversations.values() if c.user_id == user_id}
+        sent = [
+            m.created_at
+            for m in self.messages
+            if m.conversation_id in mine and m.role is MessageRole.USER and m.created_at > since
+        ]
+        return len(sent), min(sent, default=None)
 
     def record_reply(
         self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
