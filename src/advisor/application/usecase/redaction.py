@@ -1,5 +1,5 @@
 """What leaves Qampus with a reply (qone-docs#55, threat I on TB6): before the conversation is sent
-to the provider, emails, Colombian document numbers (6 to 10 digits, also written 1.075.234.567)
+to the provider, emails, Colombian document numbers (6 to 10 digits, also written 9.999.000.001)
 and phone numbers (+57 and 10 digits, or a 10-digit mobile that starts with 3) become `[redacted]`.
 Codes like ISW-602, years like 2026, times and peso amounts with `$` are kept: the advisor needs
 them. A pure function: the stored message keeps what the student wrote."""

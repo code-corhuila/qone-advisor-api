@@ -9,15 +9,15 @@ from tests.fakes import ScriptedAgent
 from tests.test_advisor_service import LAURA_CALLER, make
 
 SENSITIVE = {
-    "email": ("escríbeme a laura.gomez+qampus@corhuila.edu.co", "escríbeme a [redacted]"),
-    "10-digit document": ("mi cédula es 1075234567", "mi cédula es [redacted]"),
-    "6-digit document": ("TI 123456", "TI [redacted]"),
-    "dotted document": ("CC 1.075.234.567 por favor", "CC [redacted] por favor"),
-    "mobile": ("llámame al 3001234567", "llámame al [redacted]"),
-    "spaced mobile": ("llámame al 300 123 4567.", "llámame al [redacted]."),
-    "+57 mobile": ("whatsapp +57 300 123 4567", "whatsapp [redacted]"),
-    "+57 joined": ("whatsapp +573001234567", "whatsapp [redacted]"),
-    "+57 landline": ("fijo +57 608 875 3000", "fijo [redacted]"),
+    "email": ("escríbeme a estudiante.01+qampus@qampus.test", "escríbeme a [redacted]"),
+    "10-digit document": ("mi cédula es 9999000001", "mi cédula es [redacted]"),
+    "6-digit document": ("TI 999001", "TI [redacted]"),
+    "dotted document": ("CC 9.999.000.001 por favor", "CC [redacted] por favor"),
+    "mobile": ("llámame al 3000000001", "llámame al [redacted]"),
+    "spaced mobile": ("llámame al 300 000 0002.", "llámame al [redacted]."),
+    "+57 mobile": ("whatsapp +57 300 000 0003", "whatsapp [redacted]"),
+    "+57 joined": ("whatsapp +573000000004", "whatsapp [redacted]"),
+    "+57 landline": ("fijo +57 608 000 0005", "fijo [redacted]"),
 }
 
 KEPT = [
@@ -43,23 +43,27 @@ def test_codes_years_times_and_amounts_are_kept(text):
 
 
 def test_several_identifiers_in_one_message():
-    text = "Soy Laura, CC 1075234567, correo laura@example.com, cel 3109876543. ¿Puedo ver ISW-602?"
-    assert redact(text) == f"Soy Laura, CC {REDACTED}, correo {REDACTED}, cel {REDACTED}. ¿Puedo ver ISW-602?"
+    text = (
+        "Soy Estudiante Demo 01, CC 9999000001, correo estudiante.01@qampus.test, cel 3000000006. ¿Puedo ver ISW-602?"
+    )
+    assert (
+        redact(text) == f"Soy Estudiante Demo 01, CC {REDACTED}, correo {REDACTED}, cel {REDACTED}. ¿Puedo ver ISW-602?"
+    )
 
 
 def test_the_agent_gets_redacted_text_and_the_store_keeps_what_the_student_wrote():
     agent = ScriptedAgent()
     service, store, *_ = make(agent)
-    conversation = service.start_conversation(LAURA_CALLER, "conv-laura-redaction").item
-    first = "Mi correo es laura@example.com"
-    second = "Mi documento es 1075234567 y mi celular +57 300 123 4567, ¿qué me falta?"
+    conversation = service.start_conversation(LAURA_CALLER, "conv-redaction-01").item
+    first = "Mi correo es estudiante.01@qampus.test"
+    second = "Mi documento es 9999000001 y mi celular +57 300 000 0007, ¿qué me falta?"
     service.send_message(LAURA_CALLER, conversation.id, first, "message-key-1")
     service.send_message(LAURA_CALLER, conversation.id, second, "message-key-2")
 
     sent = [m.content for m in agent.requests[-1].history]
     assert sent[-1] == "Mi documento es [redacted] y mi celular [redacted], ¿qué me falta?"
     assert sent[0] == "Mi correo es [redacted]"  # the history is redacted too
-    assert not any("laura@example.com" in c or "1075234567" in c for r in agent.requests for c in _texts(r))
+    assert not any("estudiante.01@qampus.test" in c or "9999000001" in c for r in agent.requests for c in _texts(r))
 
     stored = [m.content for m in store.messages if m.conversation_id == conversation.id]
     assert first in stored and second in stored
