@@ -48,6 +48,11 @@ only; it says so in the log). Without `OPENAI_API_KEY` every reply is the fixed 
 with `degraded: true` and `201` (D-02); health says `llm: missing`. Without `SERVICE_TOKEN` a
 confirmation answers `503`: the saga is started only with the advisor's own token (D-08).
 
+Quality gates of CI (HU-PLT-005): the tests run with `pytest --cov=src --cov-fail-under=75` (the
+**coverage floor is 75 %** of `src/`, measured 79.99 % without PostgreSQL when it was set; raise it,
+never lower it), `pip-audit --skip-editable` fails on a known vulnerability, and gitleaks scans the
+whole history for secrets.
+
 Integration tests against the real schema and seeds run only when `TEST_DATABASE_URL` is set.
 **They empty the conversation tables**: point them at a throwaway database, never at the
 platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and runs them:
