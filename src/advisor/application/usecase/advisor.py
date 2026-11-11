@@ -13,8 +13,13 @@ is reported to the metrics port, answered or degraded (HU-OBS-001).
 A person sends at most `messages_per_hour` messages in a sliding hour across their conversations
 (#53, threat D on TB6): past it the message is refused with TooManyRequests before the agent is
 called and before anything is written, so the provider's budget is spent fairly. A repeated
-Idempotency-Key is still answered with the first reply: it costs nothing."""
+Idempotency-Key is still answered with the first reply: it costs nothing.
 
+The history sent to the agent (the new question included) is redacted first: emails, document
+and phone numbers become `[redacted]` (#55, threat I on TB6); the stored messages keep what the
+student wrote."""
+
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
 
@@ -41,6 +46,7 @@ from advisor.application.port.outbound.ports import (
     SagaStarter,
     SagaUnavailable,
 )
+from advisor.application.usecase.redaction import redact
 from advisor.application.usecase.tools import AdvisorTools
 from advisor.domain.model.conversation import Conversation, Message
 from advisor.domain.model.errors import FieldError, InvalidStatusTransition, ValidationError
@@ -126,7 +132,10 @@ class AdvisorService(AdvisorUseCases):
         question = Message.from_user(self._ids.new_id(), conversation.id, content, asked_at)
         self._within_quota(conversation.user_id, asked_at)
         tools = AdvisorTools(conversation.user_id, conversation.user_role, self._projections, self._term)
-        history = self._store.history(conversation.id, HISTORY_MESSAGES) + [question]
+        history = [
+            replace(m, content=redact(m.content))
+            for m in self._store.history(conversation.id, HISTORY_MESSAGES) + [question]
+        ]
         try:
             if self._agent is None:
                 raise AgentUnavailable("no API key configured")

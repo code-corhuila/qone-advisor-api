@@ -2,8 +2,14 @@
 INV-ADV-003). PROPOSED -> EXECUTING -> EXECUTED | FAILED; PROPOSED -> DISMISSED | EXPIRED.
 A plan expires 10 minutes after it was proposed; confirming it records the confirmation id that
 travels into the saga (INV-ENR-005); dismissing a plan that is no longer PROPOSED changes
-nothing (D-04). The summary is frozen at proposal time: it is what the student confirmed."""
+nothing (D-04). The summary is frozen at proposal time: it is what the student confirmed.
 
+Only the `reason` of the summary is written by the model, and the plan card shows it, so a plan is
+proposed only with a short plain sentence: at most 200 characters, no URL and no markup (HTML tags,
+Markdown links or images). A prompt injection cannot put a link or a script in front of the
+student (qone-docs#54, threat T on TB6)."""
+
+import re
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -13,7 +19,24 @@ from advisor.domain.model.errors import FieldError, InvalidStatusTransition, Val
 from advisor.domain.model.slot import Slot
 
 PLAN_TTL = timedelta(minutes=10)
-REASON_MAX = 500
+REASON_MAX = 500  # the column's limit
+PROPOSAL_REASON_MAX = 200
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://|\bwww\.\S|\b(?:mailto|javascript|data):", re.IGNORECASE)
+_MARKUP = re.compile(r"<\s*/?\s*[a-z!?]|!\[|\[[^\]]*\]\s*\(", re.IGNORECASE)  # HTML tags, Markdown images and links
+
+
+def reason_problem(reason: str) -> str | None:
+    """Why the model's `reason` cannot go on a plan card, or None when it is a short plain sentence."""
+    text = (reason or "").strip()
+    if not text:
+        return "the agent must say why it proposes this section"
+    if len(text) > PROPOSAL_REASON_MAX:
+        return f"must be at most {PROPOSAL_REASON_MAX} characters"
+    if _URL.search(text):
+        return "must not contain a URL"
+    if _MARKUP.search(text):
+        return "must not contain markup"
+    return None
 
 
 class PlanStatus(StrEnum):
@@ -59,6 +82,9 @@ class Plan:
     def propose(
         plan_id: UUID, conversation_id: UUID, student_id: UUID, section_id: UUID, summary: PlanSummary, now: datetime
     ) -> "Plan":
+        problem = reason_problem(summary.reason)
+        if problem is not None:
+            raise ValidationError([FieldError("reason", problem)])
         return Plan(
             plan_id,
             conversation_id,
