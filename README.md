@@ -91,6 +91,12 @@ oldest message of the hour leaves the window), and the model is not called. Ever
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
 
+Data that leaves Qampus (`code-corhuila/qone-docs#55`): before the conversation goes to the
+provider, emails, Colombian document numbers (6 to 10 digits, or dotted) and phone numbers (`+57`
+and 10 digits, or a 10-digit mobile starting with 3) become `[redacted]`
+(`application/usecase/redaction.py`); codes like `ISW-602`, years, times and `$` amounts are
+kept, and `advisor.message` stores what the student wrote.
+
 ## Branching
 
 Three permanent branches. **None of them accepts a direct commit** — you enter through a child
