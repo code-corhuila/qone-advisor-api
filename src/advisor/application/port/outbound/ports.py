@@ -13,10 +13,22 @@ from advisor.domain.model.events import DomainEvent
 from advisor.domain.model.plan import Plan, PlanStatus
 
 
-class AdvisorStore(Protocol):
-    def conversation_by_key(self, idempotency_key: str) -> Conversation | None: ...
+@dataclass(frozen=True)
+class RequestKey:
+    """An Idempotency-Key as the store keeps it (#55): unique per owner, never global, with the
+    SHA-256 (hex) of the canonical request it was first used for. A lookup or a claim of a key the
+    owner used for another request (another hash, or another kind of resource) raises
+    IdempotencyKeyReused; another owner's key with the same value is simply another key."""
 
-    def create_conversation(self, conversation: Conversation, idempotency_key: str) -> tuple[Conversation, bool]:
+    owner_id: UUID
+    value: str
+    request_hash: str
+
+
+class AdvisorStore(Protocol):
+    def conversation_by_key(self, key: RequestKey) -> Conversation | None: ...
+
+    def create_conversation(self, conversation: Conversation, key: RequestKey) -> tuple[Conversation, bool]:
         """Claims the key first: a repeated key returns the conversation created the first time."""
 
     def conversation(self, conversation_id: UUID) -> Conversation | None: ...
@@ -29,14 +41,14 @@ class AdvisorStore(Protocol):
     def history(self, conversation_id: UUID, last: int) -> list[Message]:
         """The last `last` messages, oldest first: what the agent reads before answering."""
 
-    def reply_by_key(self, idempotency_key: str) -> tuple[Message, Plan | None] | None: ...
+    def reply_by_key(self, key: RequestKey) -> tuple[Message, Plan | None] | None: ...
 
     def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
         """The USER messages of every conversation of `user_id` sent after `since`: how many and the
         instant of the oldest (the message quota, #53)."""
 
     def record_reply(
-        self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
+        self, question: Message, answer: Message, plan: Plan | None, key: RequestKey, events: list[DomainEvent]
     ) -> tuple[tuple[Message, Plan | None], bool]:
         """One transaction: the key, both messages, the plan and its events. A repeated key keeps the
         first reply and writes nothing."""

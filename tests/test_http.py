@@ -65,7 +65,7 @@ def test_without_the_llm_a_reply_is_degraded_and_still_201():
     )
     assert response.status_code == 201 and response.json()["degraded"] is True and response.json()["plan"] is None
     again = client.post(
-        f"{BASE}/conversations/{cid}/messages", headers=keyed(LAURA_H, "message-1"), json={"content": "x"}
+        f"{BASE}/conversations/{cid}/messages", headers=keyed(LAURA_H, "message-1"), json={"content": "hola"}
     )
     assert again.status_code == 200 and again.json()["message"]["id"] == response.json()["message"]["id"]
     listed = client.get(f"{BASE}/conversations/{cid}/messages", headers=LAURA_H).json()

@@ -91,6 +91,12 @@ oldest message of the hour leaves the window), and the model is not called. Ever
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
 
+Idempotency-Key (`code-corhuila/qone-docs#55`): a key belongs to the person of the token and is
+kept with the SHA-256 of its request (the operation, and for AD-05 the conversation and the
+content), so the same key from another person is another request and never answers their
+conversation, reply or plan. The same person reusing a key for a different request gets `422
+IDEMPOTENCY_KEY_REUSED` and nothing is written. Needs V014 of `qone-advisor-db`.
+
 Data that leaves Qampus (`code-corhuila/qone-docs#55`): before the conversation goes to the
 provider, emails, Colombian document numbers (6 to 10 digits, or dotted) and phone numbers (`+57`
 and 10 digits, or a 10-digit mobile starting with 3) become `[redacted]`

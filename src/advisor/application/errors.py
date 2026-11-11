@@ -1,4 +1,4 @@
-"""Errors of the application layer; the HTTP adapter translates them (403, 404, 429, 503) in one place."""
+"""Errors of the application layer; the HTTP adapter translates them (403, 404, 422, 429, 503) in one place."""
 
 
 class Forbidden(Exception):
@@ -15,6 +15,14 @@ class NotFound(Exception):
 
 class ServiceUnavailable(Exception):
     def __init__(self, message: str = "a dependency is unavailable; try again") -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class IdempotencyKeyReused(Exception):
+    """The owner already used this Idempotency-Key for a different request (#55): nothing is written."""
+
+    def __init__(self, message: str = "the Idempotency-Key was already used for a different request") -> None:
         super().__init__(message)
         self.message = message
 
