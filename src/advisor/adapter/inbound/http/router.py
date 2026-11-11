@@ -49,6 +49,23 @@ def health(request: Request, service: UseCases):
     }
 
 
+@router.get("/health/ready")
+def ready(request: Request):
+    """HU-PLT-004: readiness, public like `/health` (which stays the liveness). The 503 names the
+    first dependency that does not answer; the rollout script waits for the 200."""
+    result = request.app.state.readiness.check()
+    if not result.ready:
+        return JSONResponse(
+            {
+                "error": "SERVICE_UNAVAILABLE",
+                "message": f"{result.unreachable[0]} is not reachable",
+                "traceId": request.state.correlation_id,
+            },
+            status_code=503,
+        )
+    return {"status": "ready", "service": request.app.state.service, "checks": result.checks}
+
+
 @router.post("/conversations")
 def start_conversation(who: Current, service: UseCases, request: Request):
     result = service.start_conversation(who, idempotency_key_of(request))

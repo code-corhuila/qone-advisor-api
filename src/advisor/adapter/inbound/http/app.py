@@ -11,6 +11,8 @@ from advisor.adapter.inbound.http import errors
 from advisor.adapter.inbound.http.auth import TokenVerifier
 from advisor.adapter.inbound.http.router import router
 from advisor.application.port.inbound.advisor import AdvisorUseCases
+from advisor.application.port.inbound.health import ReadinessUseCase
+from advisor.application.usecase.readiness import CheckReadiness
 
 SERVICE = "qone-advisor-api"
 VERSION = "2.0.0"
@@ -18,9 +20,13 @@ CORRELATION_HEADER = "X-Correlation-Id"
 access = logging.getLogger("advisor.access")
 
 
-def create_app(use_cases: AdvisorUseCases, verifier: TokenVerifier) -> FastAPI:
+def create_app(
+    use_cases: AdvisorUseCases, verifier: TokenVerifier, readiness: ReadinessUseCase | None = None
+) -> FastAPI:
+    """`readiness` answers `/health/ready`; without it (in memory) there is nothing to wait for."""
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
+    app.state.readiness = readiness or CheckReadiness([])
     app.state.verifier = verifier
     app.state.service = SERVICE
     app.state.version = VERSION

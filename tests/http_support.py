@@ -42,8 +42,9 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client(agent=None, saga=None):
+def make_client(agent=None, saga=None, readiness=None):
     store, clock, saga = seeded_advisor(), MovableClock(), saga or FakeSaga()
     service = AdvisorService(store, store, agent, saga, clock, SequenceIds(), "2026-B")
-    client = TestClient(create_app(service, TokenVerifier(PUBLIC_PEM)), raise_server_exceptions=False)
+    app = create_app(service, TokenVerifier(PUBLIC_PEM), readiness=readiness)
+    client = TestClient(app, raise_server_exceptions=False)
     return client, store, clock, saga
