@@ -4,6 +4,8 @@ the first result when the key was used (norm 5.3.8); a reply writes the key, bot
 plan and its events in ONE transaction; a plan is updated only from the state it was read in.
 Messages are only inserted (INV-ADV-004)."""
 
+import threading
+from concurrent.futures import Future
 from datetime import UTC, datetime, time
 from uuid import UUID
 
@@ -38,22 +40,41 @@ def connect(
 
 
 class PostgresReachable:
-    """The ready probe's check of the database (HU-PLT-004): `SELECT 1` on a pooled connection,
-    waiting at most `timeout_seconds` for one."""
+    """The ready probe's check of the database (HU-PLT-004): `SELECT 1` on a pooled connection
+    within a deadline of `timeout_seconds`. The pool bounds the wait for a connection, but a query
+    on a pooled connection whose engine stopped answering (paused, partitioned) would block until
+    TCP gives up; so the check runs on a daemon thread and the probe waits for it at most the
+    timeout. The next probes share a check still pending instead of starting another one: at most
+    one thread is ever stuck."""
 
     name = "database"
 
     def __init__(self, pool: ConnectionPool, timeout_seconds: float = 1.0) -> None:
         self._pool = pool
         self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+        self._pending: Future | None = None
 
     def reachable(self) -> bool:
+        with self._lock:
+            if self._pending is None or self._pending.done():
+                self._pending = Future()
+                check = threading.Thread(target=self._select_one, args=(self._pending,), name="probe", daemon=True)
+                check.start()
+            pending = self._pending
+        try:
+            return pending.result(timeout=self._timeout)
+        except (TimeoutError, psycopg.Error):
+            return False
+
+    def _select_one(self, outcome: Future) -> None:
         try:
             with self._pool.connection(timeout=self._timeout) as conn:
                 conn.execute("SELECT 1")
-            return True
-        except psycopg.Error:
-            return False
+        except Exception as error:  # noqa: BLE001 - handed to the waiting probe as is
+            outcome.set_exception(error)
+        else:
+            outcome.set_result(True)
 
 
 class _KeyAlreadyUsed(Exception):
