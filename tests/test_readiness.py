@@ -3,6 +3,8 @@ traffic. Core level: each dependency check is asked, a failing or raising one ma
 ready. HTTP level: 200 ready, 503 with the common envelope. Adapter: `SELECT 1` on the pool."""
 
 import os
+import threading
+import time
 from contextlib import contextmanager
 
 import psycopg
@@ -77,6 +79,43 @@ def test_select_1_on_a_pool_that_cannot_connect_is_not_reachable_and_waits_brief
     pool = DownPool()
     check = PostgresReachable(pool, timeout_seconds=1.0)
     assert check.name == "database" and check.reachable() is False and pool.timeouts == [1.0]
+
+
+class HangingPool:
+    """A pool whose connection never answers the query until released: a paused database, whose
+    kernel still accepts the bytes while the engine never replies."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.queries = 0
+
+    @contextmanager
+    def connection(self, timeout=None):
+        yield self
+
+    def execute(self, query: str) -> None:
+        self.queries += 1
+        self.release.wait(10)
+
+
+def test_a_query_that_never_answers_is_not_reachable_within_the_timeout():
+    pool = HangingPool()
+    check = PostgresReachable(pool, timeout_seconds=0.3)
+    try:
+        started = time.perf_counter()
+        assert check.reachable() is False
+        assert check.reachable() is False  # the check still pending is shared, not started again
+        assert time.perf_counter() - started < 2
+        assert pool.queries == 1
+    finally:
+        pool.release.set()
+
+
+def test_a_query_that_answers_in_time_is_reachable():
+    pool = HangingPool()
+    pool.release.set()
+    assert PostgresReachable(pool, timeout_seconds=0.3).reachable() is True
+    assert pool.queries == 1
 
 
 @pytest.mark.skipif(not os.environ.get("TEST_DATABASE_URL"), reason="TEST_DATABASE_URL not set")

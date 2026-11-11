@@ -23,7 +23,7 @@ from advisor.application.usecase.readiness import CheckReadiness
 DB_POOL_MAX = 10
 DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
-READY_TIMEOUT_SECONDS = 1.0  # the ready probe waits at most this for a connection (HU-PLT-004)
+READY_TIMEOUT_SECONDS = 1.0  # deadline of the ready probe: connection and SELECT 1 (HU-PLT-004)
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
 LLM_BUDGET_SECONDS = 120.0  # one reply, every round included (ADR-003)
