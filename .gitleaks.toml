@@ -1,0 +1,7 @@
+# Fake keys and tokens of the test suite are fixtures, not secrets.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures"
+paths = ['''^tests/''']
