@@ -3,7 +3,7 @@ template and status class, its duration in a histogram, and `GET /metrics` at th
 app for Prometheus. The gateway never routes `/metrics`; Prometheus scrapes the container on the
 platform network. The route label is the matched template
 (`/api/v1/advisor/conversations/{conversation_id}/messages`) or `unmatched`, never the raw path,
-so the series stay bounded."""
+so the series stay bounded; likewise a non-standard method is counted as `OTHER`."""
 
 import time
 
@@ -13,6 +13,14 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, H
 from advisor.adapter.outbound.metrics.prometheus import LATENCY_BUCKETS
 
 METRICS_PATH = "/metrics"
+METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+OTHER_METHOD = "OTHER"
+
+
+def method_of(request: Request) -> str:
+    """The HTTP method, or `OTHER` for a non-standard one: the client chooses the method freely, so
+    the label would otherwise be unbounded too."""
+    return request.method if request.method in METHODS else OTHER_METHOD
 
 
 def install(app: FastAPI, registry: CollectorRegistry, service: str) -> None:
@@ -41,8 +49,9 @@ def install(app: FastAPI, registry: CollectorRegistry, service: str) -> None:
         response = await call_next(request)
         route = request.scope.get("route")
         template = getattr(route, "path", None) or "unmatched"
-        requests.labels(service, request.method, template, f"{response.status_code // 100}xx").inc()
-        duration.labels(service, request.method, template).observe(time.perf_counter() - started)
+        method = method_of(request)
+        requests.labels(service, method, template, f"{response.status_code // 100}xx").inc()
+        duration.labels(service, method, template).observe(time.perf_counter() - started)
         return response
 
     @app.get(METRICS_PATH, include_in_schema=False)

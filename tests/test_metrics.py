@@ -100,3 +100,10 @@ def test_requests_are_counted_under_their_route_template_and_replies_by_outcome(
     assert sample(client, "advisor_llm_replies_total", {"outcome": "degraded"}) == 0
     text = client.get("/metrics").text
     assert "not-a-uuid" not in text and 'route="/metrics"' not in text
+
+
+def test_a_non_standard_method_is_counted_as_other():
+    client, *_ = make_client()
+    client.request("PURGE", f"{BASE}/health")
+    text = client.get("/metrics").text
+    assert 'method="OTHER"' in text and 'method="PURGE"' not in text
