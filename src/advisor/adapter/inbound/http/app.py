@@ -1,13 +1,14 @@
 """The FastAPI application of the advisor: correlation and access log (norm 5.3.9),
-the error envelope, the routes."""
+the error envelope, the routes, and the RED metrics with `GET /metrics` (HU-OBS-001)."""
 
 import logging
 import time
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
+from prometheus_client import CollectorRegistry
 
-from advisor.adapter.inbound.http import errors
+from advisor.adapter.inbound.http import errors, metrics
 from advisor.adapter.inbound.http.auth import TokenVerifier
 from advisor.adapter.inbound.http.router import router
 from advisor.application.port.inbound.advisor import AdvisorUseCases
@@ -21,9 +22,13 @@ access = logging.getLogger("advisor.access")
 
 
 def create_app(
-    use_cases: AdvisorUseCases, verifier: TokenVerifier, readiness: ReadinessUseCase | None = None
+    use_cases: AdvisorUseCases,
+    verifier: TokenVerifier,
+    registry: CollectorRegistry | None = None,
+    readiness: ReadinessUseCase | None = None,
 ) -> FastAPI:
-    """`readiness` answers `/health/ready`; without it (in memory) there is nothing to wait for."""
+    """`registry` is the one the advisor's metrics write to; each app gets its own so tests are isolated.
+    `readiness` answers `/health/ready`; without it (in memory) there is nothing to wait for."""
     app = FastAPI(title=SERVICE, version=VERSION, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.use_cases = use_cases
     app.state.readiness = readiness or CheckReadiness([])
@@ -54,6 +59,7 @@ def create_app(
         )
         return response
 
+    metrics.install(app, registry or CollectorRegistry(), SERVICE)
     errors.install(app)
     app.include_router(router)
     return app

@@ -4,7 +4,7 @@ the first result when the key was used (norm 5.3.8); a reply writes the key, bot
 plan and its events in ONE transaction; a plan is updated only from the state it was read in.
 Messages are only inserted (INV-ADV-004)."""
 
-from datetime import UTC, time
+from datetime import UTC, datetime, time
 from uuid import UUID
 
 import psycopg
@@ -206,6 +206,16 @@ class PostgresAdvisorStore:
                 (answer["conversation_id"], answer["created_at"]),
             ).fetchone()
         return _message(answer), _plan(plan) if plan else None
+
+    def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n, min(m.created_at) AS oldest FROM advisor.message m "
+                "JOIN advisor.conversation c ON c.id = m.conversation_id "
+                "WHERE c.user_id = %s AND m.role = 'USER' AND m.created_at > %s",
+                (user_id, since),
+            ).fetchone()
+        return row["n"], _utc(row["oldest"]) if row["oldest"] else None
 
     def record_reply(
         self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
