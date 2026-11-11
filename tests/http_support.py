@@ -7,9 +7,11 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+from prometheus_client import CollectorRegistry
 
 from advisor.adapter.inbound.http.app import create_app
 from advisor.adapter.inbound.http.auth import TokenVerifier
+from advisor.adapter.outbound.metrics.prometheus import PrometheusAdvisorMetrics
 from advisor.application.usecase.advisor import AdvisorService
 from tests.fakes import FakeSaga, MovableClock, SequenceIds, seeded_advisor
 
@@ -42,8 +44,11 @@ def bearer(sub: str, role: str, name: str = "", **kw) -> dict[str, str]:
     return {"Authorization": f"Bearer {mint(sub, role, name, **kw)}"}
 
 
-def make_client(agent=None, saga=None):
+def make_client(agent=None, saga=None, readiness=None, **options):
     store, clock, saga = seeded_advisor(), MovableClock(), saga or FakeSaga()
-    service = AdvisorService(store, store, agent, saga, clock, SequenceIds(), "2026-B")
-    client = TestClient(create_app(service, TokenVerifier(PUBLIC_PEM)), raise_server_exceptions=False)
+    registry = CollectorRegistry()
+    metrics = PrometheusAdvisorMetrics(registry)
+    service = AdvisorService(store, store, agent, saga, clock, SequenceIds(), "2026-B", metrics=metrics, **options)
+    app = create_app(service, TokenVerifier(PUBLIC_PEM), registry, readiness=readiness)
+    client = TestClient(app, raise_server_exceptions=False)
     return client, store, clock, saga

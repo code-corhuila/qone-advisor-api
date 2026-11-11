@@ -83,7 +83,7 @@ def test_without_the_agent_the_reply_degrades_and_is_still_created():
         service, *_ = make(agent)
         conversation, reply = chat(service)
         assert reply.created and reply.item.degraded and reply.item.message.content == DEGRADED_REPLY
-        again = service.send_message(LAURA_CALLER, conversation.id, "otra vez", "message-key-1")
+        again = service.send_message(LAURA_CALLER, conversation.id, "¿Qué me falta para graduarme?", "message-key-1")
         assert not again.created and again.item.degraded and again.item.message.id == reply.item.message.id
 
 
@@ -104,7 +104,9 @@ def test_a_proposal_that_passes_the_gates_becomes_a_proposed_plan():
     assert plan.summary.subject_code == "ISW-602" and plan.summary.seats_available == 30
     assert plan.expires_at - plan.created_at == timedelta(minutes=10)
     assert [e.event_type for e in store.outbox] == ["PlanProposed"]
-    replay = service.send_message(LAURA_CALLER, plan.conversation_id, "x", "message-key-1")
+    replay = service.send_message(
+        LAURA_CALLER, plan.conversation_id, "Matricúlame Teoría de la Computación", "message-key-1"
+    )
     assert replay.item.plan.id == plan.id
 
 

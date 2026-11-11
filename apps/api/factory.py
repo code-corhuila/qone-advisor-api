@@ -6,24 +6,31 @@ import logging
 import os
 import sys
 
+from prometheus_client import CollectorRegistry
+
 from advisor.adapter.inbound.http.app import create_app
 from advisor.adapter.inbound.http.auth import TokenVerifier
 from advisor.adapter.outbound.llm.breaker import CircuitBreaker
+from advisor.adapter.outbound.metrics.prometheus import PrometheusAdvisorMetrics
 from advisor.adapter.outbound.persistence.memory import InMemoryAdvisor
 from advisor.adapter.outbound.runtime import SystemClock, Uuid4Generator
 from advisor.adapter.outbound.saga.http import HttpSagaStarter
 from advisor.application.port.outbound.ports import SagaUnavailable
 from advisor.application.usecase.advisor import AdvisorService
+from advisor.application.usecase.readiness import CheckReadiness
 
 # Explicit limits (norm 5.3.10, Annex C), declared here with their values.
 DB_POOL_MAX = 10
 DB_WAIT_SECONDS = 5.0
 DB_STATEMENT_TIMEOUT_MS = 5000
+READY_TIMEOUT_SECONDS = 1.0  # deadline of the ready probe: connection and SELECT 1 (HU-PLT-004)
 HTTP_KEEP_ALIVE_SECONDS = 60
 HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
 LLM_BUDGET_SECONDS = 120.0  # one reply, every round included (ADR-003)
 BREAKER_FAILURES, BREAKER_RESET_SECONDS = 3, 60.0
 SAGA_ATTEMPTS = 3
+MESSAGES_PER_HOUR = 30  # per person, sliding hour, every conversation (#53)
+MAX_TOKENS = 800  # per model call: the known maximum cost of a reply (#53)
 
 
 class Settings:
@@ -38,6 +45,17 @@ class Settings:
         self.service_token = env.get("SERVICE_TOKEN", "").strip()
         self.port = int(env.get("PORT", "8000"))
         self.log_level = env.get("LOG_LEVEL", "info").lower()
+        self.messages_per_hour = _positive(env, "ADVISOR_MESSAGES_PER_HOUR", MESSAGES_PER_HOUR)
+        self.max_tokens = _positive(env, "ADVISOR_MAX_TOKENS", MAX_TOKENS)
+
+
+def _positive(env: dict[str, str], name: str, default: int) -> int:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit() or int(raw) < 1:
+        raise SystemExit(f"{name} must be a positive integer, got {raw!r}")
+    return int(raw)
 
 
 def _public_key(env: dict[str, str]) -> str:
@@ -63,28 +81,42 @@ def build_app(settings: Settings | None = None):
     settings = settings or Settings()
     configure_logging(settings.log_level)
     log = logging.getLogger("advisor")
-    pool = None
+    pool, readiness = None, CheckReadiness([])
     if settings.database_url and settings.database_url != "memory":
-        from advisor.adapter.outbound.persistence.postgres import PostgresAdvisorStore, PostgresProjections, connect
+        from advisor.adapter.outbound.persistence.postgres import (
+            PostgresAdvisorStore,
+            PostgresProjections,
+            PostgresReachable,
+            connect,
+        )
 
         pool = connect(settings.database_url, DB_POOL_MAX, DB_WAIT_SECONDS, DB_STATEMENT_TIMEOUT_MS)
         store, projections = PostgresAdvisorStore(pool), PostgresProjections(pool)
+        readiness = CheckReadiness([PostgresReachable(pool, READY_TIMEOUT_SECONDS)])
         log.info("store: postgresql (pool max %s, statement timeout %s ms)", DB_POOL_MAX, DB_STATEMENT_TIMEOUT_MS)
     else:
         store = projections = InMemoryAdvisor()
         log.warning("store: in memory and empty (ADVISOR_DATABASE_URL not set); development only")
-    agent = None
+    agent, breaker = None, None
     if settings.openai_api_key:
         from advisor.adapter.outbound.llm.cache import PostgresLlmCache
         from advisor.adapter.outbound.llm.openai_agent import OpenAIAgent
 
         breaker = CircuitBreaker(BREAKER_FAILURES, BREAKER_RESET_SECONDS)
         cache = PostgresLlmCache(pool) if pool else None
-        agent = OpenAIAgent(settings.openai_model, settings.openai_api_key, breaker, cache, LLM_BUDGET_SECONDS)
+        agent = OpenAIAgent(
+            settings.openai_model,
+            settings.openai_api_key,
+            breaker,
+            cache,
+            LLM_BUDGET_SECONDS,
+            max_tokens=settings.max_tokens,
+        )
         log.info(
-            "llm: %s, budget %ss, breaker %s failures / %ss",
+            "llm: %s, budget %ss, max %s tokens per call, breaker %s failures / %ss",
             settings.openai_model,
             LLM_BUDGET_SECONDS,
+            settings.max_tokens,
             BREAKER_FAILURES,
             BREAKER_RESET_SECONDS,
         )
@@ -95,8 +127,21 @@ def build_app(settings: Settings | None = None):
     else:
         saga = _NoSaga()
         log.warning("saga: SERVICE_TOKEN not set; confirming a plan answers 503")
-    service = AdvisorService(store, projections, agent, saga, SystemClock(), Uuid4Generator(), settings.current_term)
-    return create_app(service, TokenVerifier(settings.public_key))
+    registry = CollectorRegistry()
+    metrics = PrometheusAdvisorMetrics(registry, breaker)
+    service = AdvisorService(
+        store,
+        projections,
+        agent,
+        saga,
+        SystemClock(),
+        Uuid4Generator(),
+        settings.current_term,
+        messages_per_hour=settings.messages_per_hour,
+        metrics=metrics,
+    )
+    log.info("quota: %s messages per person per hour", settings.messages_per_hour)
+    return create_app(service, TokenVerifier(settings.public_key), registry=registry, readiness=readiness)
 
 
 class JsonFormatter(logging.Formatter):

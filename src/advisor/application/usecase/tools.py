@@ -12,6 +12,7 @@ from uuid import UUID
 from advisor.application.port.outbound.ports import Projections, Tool
 from advisor.domain.model.advising import SectionView, assess, degree_audit
 from advisor.domain.model.conversation import UserRole
+from advisor.domain.model.plan import PROPOSAL_REASON_MAX, reason_problem
 from advisor.domain.model.slot import Slot
 
 NO_ARGS: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
@@ -91,7 +92,11 @@ class AdvisorTools:
                     "type": "object",
                     "properties": {
                         "section_id": {"type": "string"},
-                        "reason": {"type": "string", "description": "por qué propones esta sección, en una frase"},
+                        "reason": {
+                            "type": "string",
+                            "description": f"por qué propones esta sección, en una frase de texto plano de máximo "
+                            f"{PROPOSAL_REASON_MAX} caracteres, sin enlaces ni etiquetas",
+                        },
                     },
                     "required": ["section_id", "reason"],
                     "additionalProperties": False,
@@ -175,6 +180,11 @@ class AdvisorTools:
         reason = str(args.get("reason") or "").strip()
         if not reason:
             return "error: indica en una frase por qué propones esta sección"
+        if reason_problem(reason) is not None:
+            return (
+                f"error: el motivo debe ser una frase de texto plano de máximo {PROPOSAL_REASON_MAX} caracteres, "
+                "sin enlaces ni etiquetas; no se creó el plan"
+            )
         verdict = assess(
             section, self._projections.subject(section.subject_code), self._projections.student(self._user_id)
         )

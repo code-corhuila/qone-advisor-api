@@ -1,0 +1,20 @@
+# The default rules, plus OpenAI keys in every format (the advisor holds OPENAI_API_KEY): the
+# default rule only knows the old `T3BlbkFJ` shape. The only allowlisted literals are the
+# Idempotency-Key values of the test suite (request ids, not secrets); nothing else in tests/ is
+# exempt (code-corhuila/qone-docs#55).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key (sk-, sk-proj-, sk-svcacct-, sk-admin-)"
+# The whole key is the secret (group 1): the prefix alone would fall below the entropy floor.
+regex = '''\b(sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
+entropy = 3
+keywords = ["sk-"]
+
+[allowlist]
+description = "Idempotency-Key literals of the test suite"
+regexTarget = "match"
+regexes = ['''(?i)empotency-key"\s*:\s*"[a-z0-9-]{8,128}"''']

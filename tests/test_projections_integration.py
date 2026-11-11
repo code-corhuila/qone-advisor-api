@@ -51,7 +51,7 @@ def event(kind: str, at: datetime = AT, **payload) -> IncomingEvent:
 
 def test_tuition_and_enrollments_move_the_student_view_once(setup):
     project, projections, _ = setup
-    paid = event("TuitionPaid", studentId=SANTIAGO, term="2026-B")
+    paid = event("TuitionPaid", studentId=SANTIAGO, term="2026-B", providerReference="SIM-1")
     assert project.handle(paid) == "applied" and project.handle(paid) == "duplicate"
     assert project.handle(event("InvoiceIssued", studentId=SANTIAGO, term="2026-B")) == "applied"
     assert projections.student(UUID(SANTIAGO)).tuition_status == "PAID"  # PAID never goes back

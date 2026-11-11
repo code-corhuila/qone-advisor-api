@@ -60,14 +60,20 @@ def test_the_model_calls_a_tool_and_answers_with_its_result():
     first, second = chat.seen
     assert isinstance(first[0], SystemMessage) and "2026-B" in first[0].content and "STUDENT" in first[0].content
     assert first[-1].content == "¿Qué me falta?"
-    assert isinstance(second[-1], ToolMessage) and second[-1].content == '{"percent": 38}'
+    assert isinstance(second[-1], ToolMessage) and second[-1].content == (
+        '<tool_result name="degree_audit">{"percent": 38}</tool_result>'
+    )
 
 
 def test_a_failing_or_unknown_tool_is_reported_to_the_model_not_to_the_user():
     chat = ScriptedChat([call("tuition_status"), call("propose_enrollment", 2), AIMessage(content="ok")])
     assert agent(chat).reply(request(BROKEN)) == "ok"
-    assert chat.seen[1][-1].content == "error al consultar tuition_status"
-    assert chat.seen[2][-1].content == "herramienta no disponible para este usuario"
+    assert chat.seen[1][-1].content == (
+        '<tool_result name="tuition_status">error al consultar tuition_status</tool_result>'
+    )
+    assert chat.seen[2][-1].content == (
+        '<tool_result name="propose_enrollment">herramienta no disponible para este usuario</tool_result>'
+    )
 
 
 def test_the_loop_stops_after_the_last_round():

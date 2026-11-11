@@ -48,6 +48,18 @@ only; it says so in the log). Without `OPENAI_API_KEY` every reply is the fixed 
 with `degraded: true` and `201` (D-02); health says `llm: missing`. Without `SERVICE_TOKEN` a
 confirmation answers `503`: the saga is started only with the advisor's own token (D-08).
 
+Quality gates of CI (HU-PLT-005): the tests run with `pytest --cov=src --cov-fail-under=75` (the
+**coverage floor is 75 %** of `src/`, measured 79.99 % without PostgreSQL when it was set; raise it,
+never lower it), `pip-audit --skip-editable` fails on a known vulnerability, and gitleaks scans the
+whole history for secrets (`.gitleaks.toml` allowlists `tests/`, whose keys and tokens are fake
+fixtures).
+
+Ready probe (HU-PLT-004, ADR-011): `GET /api/v1/advisor/health/ready`, public like `/health`, runs
+`SELECT 1` on the pool within a 1 s deadline (connection and query, a hung query included) and answers `200
+{"status":"ready","service":"qone-advisor-api","checks":{"database":"ok"}}` or `503` with the
+common envelope (`SERVICE_UNAVAILABLE`, `database is not reachable`). In memory it answers ready
+with no checks. `/health` stays the liveness.
+
 Integration tests against the real schema and seeds run only when `TEST_DATABASE_URL` is set.
 **They empty the conversation tables**: point them at a throwaway database, never at the
 platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and runs them:
@@ -56,6 +68,14 @@ platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and r
 TEST_DATABASE_URL=postgresql://advisor:password@localhost:5438/advisor python -m pytest tests/test_postgres_integration.py tests/test_projections_integration.py
 ```
 
+Metrics (HU-OBS-001, ADR-010): `GET /metrics` at the root of the app (not under
+`/api/v1/advisor`: the gateway never routes it; Prometheus scrapes
+`http://qone-advisor-api:8000/metrics` on the platform network). It exposes
+`http_server_requests_total{service,method,route,status_class}`,
+`http_server_request_duration_seconds{service,method,route}` (route = the matched template or
+`unmatched`), `advisor_llm_replies_total{outcome}` (`answered` or `degraded`, every new reply) and
+the gauge `advisor_llm_breaker_open` (1 while the circuit around the provider is not closed).
+
 Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
 qone-advisor-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
 and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: the API with
@@ -63,9 +83,32 @@ and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: 
 
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
 5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s, 120 s per reply across
-every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga. Every log line is JSON
+every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga, at most 800 tokens per
+model call (`ADVISOR_MAX_TOKENS`) and 30 messages per person in a sliding hour
+(`ADVISOR_MESSAGES_PER_HOUR`, `code-corhuila/qone-docs#53`). Past the quota AD-05 answers `429
+TOO_MANY_REQUESTS` with the common envelope and `Retry-After: <seconds>` (until the person's
+oldest message of the hour leaves the window), and the model is not called. Every log line is JSON
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
+
+Idempotency-Key (`code-corhuila/qone-docs#55`): a key belongs to the person of the token and is
+kept with the SHA-256 of its request (the operation, and for AD-05 the conversation and the
+content), so the same key from another person is another request and never answers their
+conversation, reply or plan. The same person reusing a key for a different request gets `422
+IDEMPOTENCY_KEY_REUSED` and nothing is written. Needs V014 of `qone-advisor-db`.
+
+Data that leaves Qampus (`code-corhuila/qone-docs#55`): before the conversation goes to the
+provider, emails, Colombian document numbers (6 to 10 digits, or dotted) and phone numbers (`+57`
+and 10 digits, or a 10-digit mobile starting with 3) become `[redacted]`
+(`application/usecase/redaction.py`); codes like `ISW-602`, years, times and `$` amounts are
+kept, and `advisor.message` stores what the student wrote.
+
+Prompt injection (`code-corhuila/qone-docs#54`): the `reason` the model writes for a plan is at
+most 200 characters of plain text, with no URL and no markup (`reason_problem` in
+`domain/model/plan.py`); otherwise `propose_enrollment` answers an error and no plan is stored.
+Every tool result reaches the model inside a `<tool_result name="...">` block of its ToolMessage,
+with any delimiter in the data escaped, and the system prompt says that block is data, never
+instructions.
 
 ## Branching
 

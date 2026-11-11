@@ -81,7 +81,7 @@ def test_events_become_changes_of_the_projections_and_the_plans():
     assert changes_of(event("SeatCommitted", sectionId="s", seatsAvailable=26, reservationId="r"), "2026-B") == [
         ("seats", {"sectionId": "s", "seatsAvailable": 26})
     ]
-    assert changes_of(event("TuitionPaid", studentId="u", term="2026-B"), "2026-B") == [
+    assert changes_of(event("TuitionPaid", studentId="u", term="2026-B", providerReference="SIM-1"), "2026-B") == [
         ("tuition", {"studentId": "u", "status": "PAID"})
     ]
     confirmed = event(
@@ -111,9 +111,35 @@ def test_other_terms_and_unknown_events_are_ignored():
             return fresh
 
     project = ProjectEvents(Store(), "2026-B")
-    paid = event("TuitionPaid", studentId="u", term="2026-B")
+    paid = event("TuitionPaid", studentId="u", term="2026-B", providerReference="SIM-1")
     assert [project.handle(paid), project.handle(paid)] == ["applied", "duplicate"]
     assert project.handle(event("PlanProposed", planId="p")) == "ignored"
+
+
+def test_a_tuition_paid_without_provider_evidence_or_term_is_ignored_with_a_warning(caplog):
+    """F5 of the cut 3 audit (qone-docs#55): PAID opens the enrollment gates the advisor checks, so
+    only a payment with the provider's reference, for the current term, moves the projection."""
+    applied = []
+
+    class Store:
+        def apply(self, event_id, changes, occurred_at):
+            applied.append(changes)
+            return True
+
+    project = ProjectEvents(Store(), "2026-B")
+    for payload in (
+        {"studentId": "u", "term": "2026-B"},
+        {"studentId": "u", "term": "2026-B", "providerReference": ""},
+        {"studentId": "u", "providerReference": "SIM-1"},
+    ):
+        paid = event("TuitionPaid", **payload)
+        assert changes_of(paid, "2026-B") == []
+        with caplog.at_level("WARNING", logger="advisor.projections"):
+            assert project.handle(paid, "trace-f5") == "ignored"
+    assert applied == []
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 3 and all(r.traceId == "trace-f5" for r in warnings)
+    assert project.handle(event("TuitionPaid", studentId="u", term="2026-B", providerReference="SIM-1")) == "applied"
 
 
 def test_a_new_section_is_projected_whole():

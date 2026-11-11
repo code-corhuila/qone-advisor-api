@@ -4,13 +4,18 @@ the first result when the key was used (norm 5.3.8); a reply writes the key, bot
 plan and its events in ONE transaction; a plan is updated only from the state it was read in.
 Messages are only inserted (INV-ADV-004)."""
 
-from datetime import UTC, time
+import threading
+from concurrent.futures import Future
+from datetime import UTC, datetime, time
 from uuid import UUID
 
+import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+from advisor.application.errors import IdempotencyKeyReused
+from advisor.application.port.outbound.ports import RequestKey
 from advisor.domain.model.advising import ConfirmedSection, SectionView, StudentView, SubjectView
 from advisor.domain.model.conversation import Conversation, Message, MessageRole, UserRole
 from advisor.domain.model.events import DomainEvent
@@ -36,25 +41,70 @@ def connect(
     )
 
 
+class PostgresReachable:
+    """The ready probe's check of the database (HU-PLT-004): `SELECT 1` on a pooled connection
+    within a deadline of `timeout_seconds`. The pool bounds the wait for a connection, but a query
+    on a pooled connection whose engine stopped answering (paused, partitioned) would block until
+    TCP gives up; so the check runs on a daemon thread and the probe waits for it at most the
+    timeout. The next probes share a check still pending instead of starting another one: at most
+    one thread is ever stuck."""
+
+    name = "database"
+
+    def __init__(self, pool: ConnectionPool, timeout_seconds: float = 1.0) -> None:
+        self._pool = pool
+        self._timeout = timeout_seconds
+        self._lock = threading.Lock()
+        self._pending: Future | None = None
+
+    def reachable(self) -> bool:
+        with self._lock:
+            if self._pending is None or self._pending.done():
+                self._pending = Future()
+                check = threading.Thread(target=self._select_one, args=(self._pending,), name="probe", daemon=True)
+                check.start()
+            pending = self._pending
+        try:
+            return pending.result(timeout=self._timeout)
+        except (TimeoutError, psycopg.Error):
+            return False
+
+    def _select_one(self, outcome: Future) -> None:
+        try:
+            with self._pool.connection(timeout=self._timeout) as conn:
+                conn.execute("SELECT 1")
+        except Exception as error:  # noqa: BLE001 - handed to the waiting probe as is
+            outcome.set_exception(error)
+        else:
+            outcome.set_result(True)
+
+
 class _KeyAlreadyUsed(Exception):
     pass
 
 
-def _claim_key(conn, key: str, resource_type: str, resource_id: UUID) -> None:
+def _claim_key(conn, key: RequestKey, resource_type: str, resource_id: UUID) -> None:
     taken = conn.execute(
-        "INSERT INTO advisor.idempotency_key (key, resource_type, resource_id) VALUES (%s, %s, %s) "
-        "ON CONFLICT (key) DO NOTHING RETURNING key",
-        (key, resource_type, resource_id),
+        "INSERT INTO advisor.idempotency_key (owner_id, key, resource_type, resource_id, request_hash) "
+        "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (owner_id, key) DO NOTHING RETURNING key",
+        (key.owner_id, key.value, resource_type, resource_id, key.request_hash),
     ).fetchone()
     if taken is None:
         raise _KeyAlreadyUsed()
 
 
-def _resource_of(conn, key: str, resource_type: str) -> UUID | None:
+def _resource_of(conn, key: RequestKey, resource_type: str) -> UUID | None:
+    """What the owner created with this key; a key of another request raises (#55). Keys written
+    before V014 of qone-advisor-db have no hash and keep answering their replay."""
     row = conn.execute(
-        "SELECT resource_id FROM advisor.idempotency_key WHERE key = %s AND resource_type = %s", (key, resource_type)
+        "SELECT resource_type, resource_id, request_hash FROM advisor.idempotency_key WHERE owner_id = %s AND key = %s",
+        (key.owner_id, key.value),
     ).fetchone()
-    return row["resource_id"] if row else None
+    if row is None:
+        return None
+    if row["resource_type"] != resource_type or row["request_hash"] not in (None, key.request_hash):
+        raise IdempotencyKeyReused()
+    return row["resource_id"]
 
 
 def _write_event(conn, event: DomainEvent) -> None:
@@ -121,23 +171,23 @@ class PostgresAdvisorStore:
     def __init__(self, pool: ConnectionPool) -> None:
         self._pool = pool
 
-    def conversation_by_key(self, idempotency_key: str) -> Conversation | None:
+    def conversation_by_key(self, key: RequestKey) -> Conversation | None:
         with self._pool.connection() as conn:
-            found = _resource_of(conn, idempotency_key, "conversation")
+            found = _resource_of(conn, key, "conversation")
         return self.conversation(found) if found else None
 
-    def create_conversation(self, conversation: Conversation, idempotency_key: str) -> tuple[Conversation, bool]:
+    def create_conversation(self, conversation: Conversation, key: RequestKey) -> tuple[Conversation, bool]:
         c = conversation
         try:
             with self._pool.connection() as conn, conn.transaction():
-                _claim_key(conn, idempotency_key, "conversation", c.id)
+                _claim_key(conn, key, "conversation", c.id)
                 conn.execute(
                     "INSERT INTO advisor.conversation (id, user_id, user_role, model, created_at) VALUES (%s, %s, %s, "
                     "%s, %s)",
                     (c.id, c.user_id, c.user_role.value, c.model, c.created_at),
                 )
         except _KeyAlreadyUsed:
-            earlier = self.conversation_by_key(idempotency_key)
+            earlier = self.conversation_by_key(key)
             assert earlier is not None
             return earlier, False
         return c, True
@@ -175,9 +225,9 @@ class PostgresAdvisorStore:
             ).fetchall()
         return [_message(r) for r in reversed(rows)]
 
-    def reply_by_key(self, idempotency_key: str) -> tuple[Message, Plan | None] | None:
+    def reply_by_key(self, key: RequestKey) -> tuple[Message, Plan | None] | None:
         with self._pool.connection() as conn:
-            answer_id = _resource_of(conn, idempotency_key, "reply")
+            answer_id = _resource_of(conn, key, "reply")
             if answer_id is None:
                 return None
             answer = conn.execute("SELECT * FROM advisor.message WHERE id = %s", (answer_id,)).fetchone()
@@ -187,12 +237,22 @@ class PostgresAdvisorStore:
             ).fetchone()
         return _message(answer), _plan(plan) if plan else None
 
+    def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n, min(m.created_at) AS oldest FROM advisor.message m "
+                "JOIN advisor.conversation c ON c.id = m.conversation_id "
+                "WHERE c.user_id = %s AND m.role = 'USER' AND m.created_at > %s",
+                (user_id, since),
+            ).fetchone()
+        return row["n"], _utc(row["oldest"]) if row["oldest"] else None
+
     def record_reply(
-        self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
+        self, question: Message, answer: Message, plan: Plan | None, key: RequestKey, events: list[DomainEvent]
     ) -> tuple[tuple[Message, Plan | None], bool]:
         try:
             with self._pool.connection() as conn, conn.transaction():
-                _claim_key(conn, idempotency_key, "reply", answer.id)
+                _claim_key(conn, key, "reply", answer.id)
                 for m in (question, answer):
                     conn.execute(
                         "INSERT INTO advisor.message (id, conversation_id, role, content, created_at) VALUES (%s, %s, "
@@ -210,7 +270,7 @@ class PostgresAdvisorStore:
                 for event in events:
                     _write_event(conn, event)
         except _KeyAlreadyUsed:
-            earlier = self.reply_by_key(idempotency_key)
+            earlier = self.reply_by_key(key)
             assert earlier is not None
             return earlier, False
         return (answer, plan), True
