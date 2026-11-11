@@ -6,9 +6,12 @@ import logging
 import os
 import sys
 
+from prometheus_client import CollectorRegistry
+
 from advisor.adapter.inbound.http.app import create_app
 from advisor.adapter.inbound.http.auth import TokenVerifier
 from advisor.adapter.outbound.llm.breaker import CircuitBreaker
+from advisor.adapter.outbound.metrics.prometheus import PrometheusAdvisorMetrics
 from advisor.adapter.outbound.persistence.memory import InMemoryAdvisor
 from advisor.adapter.outbound.runtime import SystemClock, Uuid4Generator
 from advisor.adapter.outbound.saga.http import HttpSagaStarter
@@ -86,7 +89,7 @@ def build_app(settings: Settings | None = None):
     else:
         store = projections = InMemoryAdvisor()
         log.warning("store: in memory and empty (ADVISOR_DATABASE_URL not set); development only")
-    agent = None
+    agent, breaker = None, None
     if settings.openai_api_key:
         from advisor.adapter.outbound.llm.cache import PostgresLlmCache
         from advisor.adapter.outbound.llm.openai_agent import OpenAIAgent
@@ -116,6 +119,8 @@ def build_app(settings: Settings | None = None):
     else:
         saga = _NoSaga()
         log.warning("saga: SERVICE_TOKEN not set; confirming a plan answers 503")
+    registry = CollectorRegistry()
+    metrics = PrometheusAdvisorMetrics(registry, breaker)
     service = AdvisorService(
         store,
         projections,
@@ -125,9 +130,10 @@ def build_app(settings: Settings | None = None):
         Uuid4Generator(),
         settings.current_term,
         messages_per_hour=settings.messages_per_hour,
+        metrics=metrics,
     )
     log.info("quota: %s messages per person per hour", settings.messages_per_hour)
-    return create_app(service, TokenVerifier(settings.public_key))
+    return create_app(service, TokenVerifier(settings.public_key), registry=registry)
 
 
 class JsonFormatter(logging.Formatter):

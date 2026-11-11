@@ -56,6 +56,14 @@ platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and r
 TEST_DATABASE_URL=postgresql://advisor:password@localhost:5438/advisor python -m pytest tests/test_postgres_integration.py tests/test_projections_integration.py
 ```
 
+Metrics (HU-OBS-001, ADR-010): `GET /metrics` at the root of the app (not under
+`/api/v1/advisor`: the gateway never routes it; Prometheus scrapes
+`http://qone-advisor-api:8000/metrics` on the platform network). It exposes
+`http_server_requests_total{service,method,route,status_class}`,
+`http_server_request_duration_seconds{service,method,route}` (route = the matched template or
+`unmatched`), `advisor_llm_replies_total{outcome}` (`answered` or `degraded`, every new reply) and
+the gauge `advisor_llm_breaker_open` (1 while the circuit around the provider is not closed).
+
 Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
 qone-advisor-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
 and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: the API with
