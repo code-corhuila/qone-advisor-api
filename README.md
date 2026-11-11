@@ -51,7 +51,8 @@ confirmation answers `503`: the saga is started only with the advisor's own toke
 Quality gates of CI (HU-PLT-005): the tests run with `pytest --cov=src --cov-fail-under=75` (the
 **coverage floor is 75 %** of `src/`, measured 79.99 % without PostgreSQL when it was set; raise it,
 never lower it), `pip-audit --skip-editable` fails on a known vulnerability, and gitleaks scans the
-whole history for secrets.
+whole history for secrets (`.gitleaks.toml` allowlists `tests/`, whose keys and tokens are fake
+fixtures).
 
 Ready probe (HU-PLT-004, ADR-011): `GET /api/v1/advisor/health/ready`, public like `/health`, runs
 `SELECT 1` on the pool waiting at most 1 s for a connection and answers `200

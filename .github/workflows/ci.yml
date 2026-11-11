@@ -84,4 +84,4 @@ jobs:
         with:
           fetch-depth: 0
       - name: Secret scan of the whole history (gitleaks, HU-PLT-005)
-        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --redact --verbose
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 detect --source /repo --config /repo/.gitleaks.toml --redact --verbose
