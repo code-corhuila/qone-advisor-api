@@ -104,6 +104,12 @@ class SagaStarter(Protocol):
     ) -> SagaResult: ...
 
 
+class AdvisorMetrics(Protocol):
+    """What the advisor reports about itself (HU-OBS-001): every new reply, answered or degraded."""
+
+    def reply_recorded(self, degraded: bool) -> None: ...
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 

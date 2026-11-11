@@ -7,7 +7,8 @@ closed over its owner (INV-ADV-002); without the agent the reply is the fixed de
 and still 201 (D-02). Confirming a plan starts the saga through the advisor's service token with
 `origin: AGENT` and the confirmation id (INV-ADV-003, INV-ENR-005); the student's token never
 reaches the workflow. The saga answers when it ends, so its outcome settles the plan at once;
-the consumer applies the same outcome from the enrollment events, idempotently."""
+the consumer applies the same outcome from the enrollment events, idempotently. Every new reply
+is reported to the metrics port, answered or degraded (HU-OBS-001)."""
 
 from datetime import timedelta
 from uuid import UUID
@@ -24,6 +25,7 @@ from advisor.application.port.inbound.advisor import (
 )
 from advisor.application.port.inbound.caller import Caller, Role
 from advisor.application.port.outbound.ports import (
+    AdvisorMetrics,
     AdvisorStore,
     Agent,
     AgentRequest,
@@ -50,6 +52,11 @@ DEGRADED_REPLY = (
 SAGA_OUTCOME = {"COMPLETED": True, "COMPENSATED": False, "FAILED": False}
 
 
+class _NoMetrics:
+    def reply_recorded(self, degraded: bool) -> None:
+        return None
+
+
 class AdvisorService(AdvisorUseCases):
     def __init__(
         self,
@@ -60,6 +67,7 @@ class AdvisorService(AdvisorUseCases):
         clock: Clock,
         ids: IdGenerator,
         current_term: str,
+        metrics: AdvisorMetrics | None = None,
     ) -> None:
         self._store = store
         self._projections = projections
@@ -68,6 +76,7 @@ class AdvisorService(AdvisorUseCases):
         self._clock = clock
         self._ids = ids
         self._term = current_term
+        self._metrics = metrics or _NoMetrics()
 
     def health(self) -> Health:
         return Health(self._agent is not None, self._agent.model if self._agent else None)
@@ -136,7 +145,10 @@ class AdvisorService(AdvisorUseCases):
             )
         events = [e for e in [plan_event(plan)] if e] if plan else []
         (message, stored_plan), created = self._store.record_reply(question, answer, plan, idempotency_key, events)
-        return Created(ChatReply(message, stored_plan, degraded or message.content == DEGRADED_REPLY), created)
+        reply = ChatReply(message, stored_plan, degraded or message.content == DEGRADED_REPLY)
+        if created:
+            self._metrics.reply_recorded(reply.degraded)
+        return Created(reply, created)
 
     # --- plans (AD-06..AD-08)
     def plan(self, caller: Caller, plan_id: UUID) -> Plan:
