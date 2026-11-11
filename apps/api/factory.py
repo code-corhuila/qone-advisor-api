@@ -24,6 +24,8 @@ HTTP_GRACEFUL_SHUTDOWN_SECONDS = 20
 LLM_BUDGET_SECONDS = 120.0  # one reply, every round included (ADR-003)
 BREAKER_FAILURES, BREAKER_RESET_SECONDS = 3, 60.0
 SAGA_ATTEMPTS = 3
+MESSAGES_PER_HOUR = 30  # per person, sliding hour, every conversation (#53)
+MAX_TOKENS = 800  # per model call: the known maximum cost of a reply (#53)
 
 
 class Settings:
@@ -38,6 +40,17 @@ class Settings:
         self.service_token = env.get("SERVICE_TOKEN", "").strip()
         self.port = int(env.get("PORT", "8000"))
         self.log_level = env.get("LOG_LEVEL", "info").lower()
+        self.messages_per_hour = _positive(env, "ADVISOR_MESSAGES_PER_HOUR", MESSAGES_PER_HOUR)
+        self.max_tokens = _positive(env, "ADVISOR_MAX_TOKENS", MAX_TOKENS)
+
+
+def _positive(env: dict[str, str], name: str, default: int) -> int:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit() or int(raw) < 1:
+        raise SystemExit(f"{name} must be a positive integer, got {raw!r}")
+    return int(raw)
 
 
 def _public_key(env: dict[str, str]) -> str:
@@ -80,11 +93,19 @@ def build_app(settings: Settings | None = None):
 
         breaker = CircuitBreaker(BREAKER_FAILURES, BREAKER_RESET_SECONDS)
         cache = PostgresLlmCache(pool) if pool else None
-        agent = OpenAIAgent(settings.openai_model, settings.openai_api_key, breaker, cache, LLM_BUDGET_SECONDS)
+        agent = OpenAIAgent(
+            settings.openai_model,
+            settings.openai_api_key,
+            breaker,
+            cache,
+            LLM_BUDGET_SECONDS,
+            max_tokens=settings.max_tokens,
+        )
         log.info(
-            "llm: %s, budget %ss, breaker %s failures / %ss",
+            "llm: %s, budget %ss, max %s tokens per call, breaker %s failures / %ss",
             settings.openai_model,
             LLM_BUDGET_SECONDS,
+            settings.max_tokens,
             BREAKER_FAILURES,
             BREAKER_RESET_SECONDS,
         )
@@ -95,7 +116,17 @@ def build_app(settings: Settings | None = None):
     else:
         saga = _NoSaga()
         log.warning("saga: SERVICE_TOKEN not set; confirming a plan answers 503")
-    service = AdvisorService(store, projections, agent, saga, SystemClock(), Uuid4Generator(), settings.current_term)
+    service = AdvisorService(
+        store,
+        projections,
+        agent,
+        saga,
+        SystemClock(),
+        Uuid4Generator(),
+        settings.current_term,
+        messages_per_hour=settings.messages_per_hour,
+    )
+    log.info("quota: %s messages per person per hour", settings.messages_per_hour)
     return create_app(service, TokenVerifier(settings.public_key))
 
 

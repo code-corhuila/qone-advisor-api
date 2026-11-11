@@ -2,6 +2,8 @@
 the model call them and stops when the model answers. One reply has a 120 s budget across all
 its rounds; any provider error, a spent budget or an open circuit raises AgentUnavailable and the
 use case degrades the reply (D-02). Identical prompts are served from the cache (llm_cache).
+Every model call is capped at `max_tokens` (800 by default), so one reply has a known maximum
+cost (#53).
 
 The system prompt goes first and does not change between turns, so the provider's own prompt
 caching reuses it; the history and the question go last."""
@@ -23,6 +25,7 @@ from advisor.domain.model.conversation import MessageRole
 log = logging.getLogger("advisor.llm")
 BUDGET_SECONDS = 120.0
 MAX_TOOL_ROUNDS = 6
+MAX_TOKENS = 800
 GAVE_UP = "No pude completar la consulta con las herramientas disponibles. Intenta reformular la pregunta."
 
 SYSTEM_PROMPT = """Eres el Asesor Académico de Qampus, la plataforma de planeación y matrícula de la \
@@ -61,6 +64,7 @@ class OpenAIAgent:
         budget_seconds: float = BUDGET_SECONDS,
         chat_factory: Callable[[float], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        max_tokens: int = MAX_TOKENS,
     ) -> None:
         self._model = model
         self._breaker = breaker or CircuitBreaker()
@@ -68,7 +72,13 @@ class OpenAIAgent:
         self._clock = clock
         self._chat_factory = chat_factory or (
             lambda timeout: ChatOpenAI(
-                model=model, api_key=api_key, temperature=0, request_timeout=timeout, max_retries=1, cache=cache
+                model=model,
+                api_key=api_key,
+                temperature=0,
+                request_timeout=timeout,
+                max_retries=1,
+                max_tokens=max_tokens,
+                cache=cache,
             )
         )
 
