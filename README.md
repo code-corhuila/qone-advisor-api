@@ -48,6 +48,12 @@ only; it says so in the log). Without `OPENAI_API_KEY` every reply is the fixed 
 with `degraded: true` and `201` (D-02); health says `llm: missing`. Without `SERVICE_TOKEN` a
 confirmation answers `503`: the saga is started only with the advisor's own token (D-08).
 
+Ready probe (HU-PLT-004, ADR-011): `GET /api/v1/advisor/health/ready`, public like `/health`, runs
+`SELECT 1` on the pool waiting at most 1 s for a connection and answers `200
+{"status":"ready","service":"qone-advisor-api","checks":{"database":"ok"}}` or `503` with the
+common envelope (`SERVICE_UNAVAILABLE`, `database is not reachable`). In memory it answers ready
+with no checks. `/health` stays the liveness.
+
 Integration tests against the real schema and seeds run only when `TEST_DATABASE_URL` is set.
 **They empty the conversation tables**: point them at a throwaway database, never at the
 platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and runs them:

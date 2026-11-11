@@ -114,6 +114,15 @@ class AdvisorMetrics(Protocol):
     def reply_recorded(self, degraded: bool) -> None: ...
 
 
+class DependencyCheck(Protocol):
+    """What the ready probe asks (HU-PLT-004): one dependency, answered within a short timeout."""
+
+    name: str
+
+    def reachable(self) -> bool:
+        """True when the dependency answers now (the database: `SELECT 1`)."""
+
+
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
