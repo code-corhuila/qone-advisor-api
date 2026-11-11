@@ -53,6 +53,12 @@ Quality gates of CI (HU-PLT-005): the tests run with `pytest --cov=src --cov-fai
 never lower it), `pip-audit --skip-editable` fails on a known vulnerability, and gitleaks scans the
 whole history for secrets.
 
+Ready probe (HU-PLT-004, ADR-011): `GET /api/v1/advisor/health/ready`, public like `/health`, runs
+`SELECT 1` on the pool waiting at most 1 s for a connection and answers `200
+{"status":"ready","service":"qone-advisor-api","checks":{"database":"ok"}}` or `503` with the
+common envelope (`SERVICE_UNAVAILABLE`, `database is not reachable`). In memory it answers ready
+with no checks. `/health` stays the liveness.
+
 Integration tests against the real schema and seeds run only when `TEST_DATABASE_URL` is set.
 **They empty the conversation tables**: point them at a throwaway database, never at the
 platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and runs them:
@@ -61,6 +67,14 @@ platform's. `ci.yml` clones `qone-advisor-db`, migrates a fresh PostgreSQL and r
 TEST_DATABASE_URL=postgresql://advisor:password@localhost:5438/advisor python -m pytest tests/test_postgres_integration.py tests/test_projections_integration.py
 ```
 
+Metrics (HU-OBS-001, ADR-010): `GET /metrics` at the root of the app (not under
+`/api/v1/advisor`: the gateway never routes it; Prometheus scrapes
+`http://qone-advisor-api:8000/metrics` on the platform network). It exposes
+`http_server_requests_total{service,method,route,status_class}`,
+`http_server_request_duration_seconds{service,method,route}` (route = the matched template or
+`unmatched`), `advisor_llm_replies_total{outcome}` (`answered` or `degraded`, every new reply) and
+the gauge `advisor_llm_breaker_open` (1 while the circuit around the provider is not closed).
+
 Container image and compose (`deploy/`, Annex G): `docker build -f deploy/Dockerfile -t
 qone-advisor-api:dev .`, then `deploy/smoke.sh` against the running container; `ci.yml` builds
 and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: the API with
@@ -68,7 +82,11 @@ and smoke-checks the image. `deploy/compose.yml` is what `qone-infra` includes: 
 
 Explicit limits (norm 5.3.10), declared in `apps/api/factory.py`: pool 10 connections with a
 5 s wait, statement timeout 5 s, keep-alive 60 s, graceful shutdown 20 s, 120 s per reply across
-every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga. Every log line is JSON
+every LLM round, breaker 3 failures / 60 s, 3 attempts to start the saga, at most 800 tokens per
+model call (`ADVISOR_MAX_TOKENS`) and 30 messages per person in a sliding hour
+(`ADVISOR_MESSAGES_PER_HOUR`, `code-corhuila/qone-docs#53`). Past the quota AD-05 answers `429
+TOO_MANY_REQUESTS` with the common envelope and `Retry-After: <seconds>` (until the person's
+oldest message of the hour leaves the window), and the model is not called. Every log line is JSON
 with the `traceId`. `scripts/sync-contracts.sh [ref]` refreshes the contract copies in
 `contracts/openapi/`.
 

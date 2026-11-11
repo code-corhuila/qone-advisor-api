@@ -31,6 +31,10 @@ class AdvisorStore(Protocol):
 
     def reply_by_key(self, idempotency_key: str) -> tuple[Message, Plan | None] | None: ...
 
+    def user_messages_since(self, user_id: UUID, since: datetime) -> tuple[int, datetime | None]:
+        """The USER messages of every conversation of `user_id` sent after `since`: how many and the
+        instant of the oldest (the message quota, #53)."""
+
     def record_reply(
         self, question: Message, answer: Message, plan: Plan | None, idempotency_key: str, events: list[DomainEvent]
     ) -> tuple[tuple[Message, Plan | None], bool]:
@@ -102,6 +106,21 @@ class SagaStarter(Protocol):
     def start(
         self, student_id: UUID, section_id: UUID, confirmation_id: UUID, idempotency_key: str, correlation_id: str
     ) -> SagaResult: ...
+
+
+class AdvisorMetrics(Protocol):
+    """What the advisor reports about itself (HU-OBS-001): every new reply, answered or degraded."""
+
+    def reply_recorded(self, degraded: bool) -> None: ...
+
+
+class DependencyCheck(Protocol):
+    """What the ready probe asks (HU-PLT-004): one dependency, answered within a short timeout."""
+
+    name: str
+
+    def reachable(self) -> bool:
+        """True when the dependency answers now (the database: `SELECT 1`)."""
 
 
 class Clock(Protocol):

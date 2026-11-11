@@ -7,12 +7,18 @@ closed over its owner (INV-ADV-002); without the agent the reply is the fixed de
 and still 201 (D-02). Confirming a plan starts the saga through the advisor's service token with
 `origin: AGENT` and the confirmation id (INV-ADV-003, INV-ENR-005); the student's token never
 reaches the workflow. The saga answers when it ends, so its outcome settles the plan at once;
-the consumer applies the same outcome from the enrollment events, idempotently."""
+the consumer applies the same outcome from the enrollment events, idempotently. Every new reply
+is reported to the metrics port, answered or degraded (HU-OBS-001).
+
+A person sends at most `messages_per_hour` messages in a sliding hour across their conversations
+(#53, threat D on TB6): past it the message is refused with TooManyRequests before the agent is
+called and before anything is written, so the provider's budget is spent fairly. A repeated
+Idempotency-Key is still answered with the first reply: it costs nothing."""
 
 from datetime import timedelta
 from uuid import UUID
 
-from advisor.application.errors import Forbidden, NotFound, ServiceUnavailable
+from advisor.application.errors import Forbidden, NotFound, ServiceUnavailable, TooManyRequests
 from advisor.application.port.inbound.advisor import (
     MAX_LIMIT,
     AdvisorUseCases,
@@ -24,6 +30,7 @@ from advisor.application.port.inbound.advisor import (
 )
 from advisor.application.port.inbound.caller import Caller, Role
 from advisor.application.port.outbound.ports import (
+    AdvisorMetrics,
     AdvisorStore,
     Agent,
     AgentRequest,
@@ -39,15 +46,22 @@ from advisor.domain.model.conversation import Conversation, Message
 from advisor.domain.model.errors import FieldError, InvalidStatusTransition, ValidationError
 from advisor.domain.model.events import plan_event
 from advisor.domain.model.plan import Plan, PlanStatus, PlanSummary
+from advisor.domain.model.quota import MessageQuota
 
 KEY_MIN, KEY_MAX = 8, 128
 HISTORY_MESSAGES = 20
+MESSAGES_PER_HOUR = 30
 PEOPLE = (Role.STUDENT, Role.PROFESSOR, Role.ADMIN)
 DEGRADED_REPLY = (
     "El asesor no está disponible en este momento. Puedes seguir consultando tu pensum, matricular y pagar "
     "desde el portal; intenta de nuevo en unos minutos."
 )
 SAGA_OUTCOME = {"COMPLETED": True, "COMPENSATED": False, "FAILED": False}
+
+
+class _NoMetrics:
+    def reply_recorded(self, degraded: bool) -> None:
+        return None
 
 
 class AdvisorService(AdvisorUseCases):
@@ -60,6 +74,8 @@ class AdvisorService(AdvisorUseCases):
         clock: Clock,
         ids: IdGenerator,
         current_term: str,
+        messages_per_hour: int = MESSAGES_PER_HOUR,
+        metrics: AdvisorMetrics | None = None,
     ) -> None:
         self._store = store
         self._projections = projections
@@ -68,6 +84,8 @@ class AdvisorService(AdvisorUseCases):
         self._clock = clock
         self._ids = ids
         self._term = current_term
+        self._quota = MessageQuota(messages_per_hour)
+        self._metrics = metrics or _NoMetrics()
 
     def health(self) -> Health:
         return Health(self._agent is not None, self._agent.model if self._agent else None)
@@ -106,6 +124,7 @@ class AdvisorService(AdvisorUseCases):
             return Created(ChatReply(prior[0], prior[1], prior[0].content == DEGRADED_REPLY), False)
         asked_at = self._clock.now()
         question = Message.from_user(self._ids.new_id(), conversation.id, content, asked_at)
+        self._within_quota(conversation.user_id, asked_at)
         tools = AdvisorTools(conversation.user_id, conversation.user_role, self._projections, self._term)
         history = self._store.history(conversation.id, HISTORY_MESSAGES) + [question]
         try:
@@ -136,7 +155,10 @@ class AdvisorService(AdvisorUseCases):
             )
         events = [e for e in [plan_event(plan)] if e] if plan else []
         (message, stored_plan), created = self._store.record_reply(question, answer, plan, idempotency_key, events)
-        return Created(ChatReply(message, stored_plan, degraded or message.content == DEGRADED_REPLY), created)
+        reply = ChatReply(message, stored_plan, degraded or message.content == DEGRADED_REPLY)
+        if created:
+            self._metrics.reply_recorded(reply.degraded)
+        return Created(reply, created)
 
     # --- plans (AD-06..AD-08)
     def plan(self, caller: Caller, plan_id: UUID) -> Plan:
@@ -176,6 +198,12 @@ class AdvisorService(AdvisorUseCases):
         return self._store.plan(plan_id) or plan
 
     # --- helpers
+    def _within_quota(self, user_id: UUID, now) -> None:
+        sent, oldest = self._store.user_messages_since(user_id, self._quota.window_start(now))
+        wait = self._quota.retry_after(sent, oldest, now)
+        if wait is not None:
+            raise TooManyRequests(self._quota.per_hour, wait)
+
     def _own_conversation(self, caller: Caller, conversation_id: UUID) -> Conversation:
         user_id = _person(caller)
         conversation = self._store.conversation(conversation_id)

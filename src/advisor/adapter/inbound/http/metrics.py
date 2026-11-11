@@ -1,0 +1,50 @@
+"""RED metrics of the HTTP border (HU-OBS-001, ADR-010): every request counted by method, route
+template and status class, its duration in a histogram, and `GET /metrics` at the root of the
+app for Prometheus. The gateway never routes `/metrics`; Prometheus scrapes the container on the
+platform network. The route label is the matched template
+(`/api/v1/advisor/conversations/{conversation_id}/messages`) or `unmatched`, never the raw path,
+so the series stay bounded."""
+
+import time
+
+from fastapi import FastAPI, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
+
+from advisor.adapter.outbound.metrics.prometheus import LATENCY_BUCKETS
+
+METRICS_PATH = "/metrics"
+
+
+def install(app: FastAPI, registry: CollectorRegistry, service: str) -> None:
+    """Adds the middleware and the scrape route. Call it after the other middlewares so this one
+    is the outermost and sees the final status, the neutral 500 included."""
+    requests = Counter(
+        "http_server_requests_total",
+        "HTTP requests by service, method, route template and status class",
+        ["service", "method", "route", "status_class"],
+        registry=registry,
+    )
+    duration = Histogram(
+        "http_server_request_duration_seconds",
+        "HTTP request duration in seconds by service, method and route template",
+        ["service", "method", "route"],
+        buckets=LATENCY_BUCKETS,
+        registry=registry,
+    )
+    app.state.metrics_registry = registry
+
+    @app.middleware("http")
+    async def measure(request: Request, call_next):
+        if request.url.path == METRICS_PATH:
+            return await call_next(request)
+        started = time.perf_counter()
+        response = await call_next(request)
+        route = request.scope.get("route")
+        template = getattr(route, "path", None) or "unmatched"
+        requests.labels(service, request.method, template, f"{response.status_code // 100}xx").inc()
+        duration.labels(service, request.method, template).observe(time.perf_counter() - started)
+        return response
+
+    @app.get(METRICS_PATH, include_in_schema=False)
+    def scrape() -> Response:
+        return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
