@@ -18,10 +18,15 @@ Idempotency-Key is still answered with the first reply: it costs nothing.
 An Idempotency-Key belongs to the person who sent it (#55): the same key from someone else is
 another request and never answers their conversation, reply or plan. It is kept with the SHA-256
 of the canonical request (the operation, and for a message its conversation and content); the
-same person reusing a key for a different request gets IdempotencyKeyReused and nothing is written."""
+same person reusing a key for a different request gets IdempotencyKeyReused and nothing is written.
+
+The history sent to the agent (the new question included) is redacted first: emails, document
+and phone numbers become `[redacted]` (#55, threat I on TB6); the stored messages keep what the
+student wrote."""
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
 
@@ -49,6 +54,7 @@ from advisor.application.port.outbound.ports import (
     SagaStarter,
     SagaUnavailable,
 )
+from advisor.application.usecase.redaction import redact
 from advisor.application.usecase.tools import AdvisorTools
 from advisor.domain.model.conversation import Conversation, Message
 from advisor.domain.model.errors import FieldError, InvalidStatusTransition, ValidationError
@@ -138,7 +144,10 @@ class AdvisorService(AdvisorUseCases):
         question = Message.from_user(self._ids.new_id(), conversation.id, content, asked_at)
         self._within_quota(conversation.user_id, asked_at)
         tools = AdvisorTools(conversation.user_id, conversation.user_role, self._projections, self._term)
-        history = self._store.history(conversation.id, HISTORY_MESSAGES) + [question]
+        history = [
+            replace(m, content=redact(m.content))
+            for m in self._store.history(conversation.id, HISTORY_MESSAGES) + [question]
+        ]
         try:
             if self._agent is None:
                 raise AgentUnavailable("no API key configured")

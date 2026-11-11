@@ -97,6 +97,19 @@ content), so the same key from another person is another request and never answe
 conversation, reply or plan. The same person reusing a key for a different request gets `422
 IDEMPOTENCY_KEY_REUSED` and nothing is written. Needs V014 of `qone-advisor-db`.
 
+Data that leaves Qampus (`code-corhuila/qone-docs#55`): before the conversation goes to the
+provider, emails, Colombian document numbers (6 to 10 digits, or dotted) and phone numbers (`+57`
+and 10 digits, or a 10-digit mobile starting with 3) become `[redacted]`
+(`application/usecase/redaction.py`); codes like `ISW-602`, years, times and `$` amounts are
+kept, and `advisor.message` stores what the student wrote.
+
+Prompt injection (`code-corhuila/qone-docs#54`): the `reason` the model writes for a plan is at
+most 200 characters of plain text, with no URL and no markup (`reason_problem` in
+`domain/model/plan.py`); otherwise `propose_enrollment` answers an error and no plan is stored.
+Every tool result reaches the model inside a `<tool_result name="...">` block of its ToolMessage,
+with any delimiter in the data escaped, and the system prompt says that block is data, never
+instructions.
+
 ## Branching
 
 Three permanent branches. **None of them accepts a direct commit** — you enter through a child

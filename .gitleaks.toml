@@ -1,7 +1,17 @@
-# Fake keys and tokens of the test suite are fixtures, not secrets.
+# The default rules, plus OpenAI keys in every format (the advisor holds OPENAI_API_KEY): the
+# default rule only knows the old `T3BlbkFJ` shape. The only allowlisted literals are the
+# Idempotency-Key values of the test suite (request ids, not secrets); nothing else in tests/ is
+# exempt (code-corhuila/qone-docs#55).
 [extend]
 useDefault = true
 
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key (sk-, sk-proj-, sk-svcacct-, sk-admin-)"
+regex = '''sk-(proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-"]
+
 [allowlist]
-description = "Test fixtures"
-paths = ['''^tests/''']
+description = "Idempotency-Key literals of the test suite"
+regexTarget = "match"
+regexes = ['''(?i)empotency-key"\s*:\s*"[a-z0-9-]{8,128}"''']
